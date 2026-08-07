@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "name": "core",
+      "source": "skills/codex"
+    },
+    {
+      "name": "optimize-claude-prompt",
+      "source": "skills/claude/optimize-claude-prompt"
+    },
+    {
+      "name": "impeccable",
+      "source": ".pi/skills/impeccable"
+    }
+  ],
+  "skillExclusions": [
+    {
+      "path": "~/.codex/skills/optimize-gpt-5-6-prompt",
+      "reason": "Pi uses the harness-managed GPT optimizer while Codex retains its native copy."
+    },
+    {
+      "path": "~/.claude/skills/optimize-claude-prompt",
+      "reason": "Pi uses the harness-managed Claude optimizer while Claude retains its native copy."
+    }
+  ],
+  "prompts": []
+}

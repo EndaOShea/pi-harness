@@ -1,0 +1,76 @@
+name: Validate harness
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Validate repository and isolated installer
+        run: ./scripts/validate.sh
+
+  impeccable-update-check:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check for a newer Impeccable skill release
+        id: check
+        run: |
+          set +e
+          ./scripts/check-impeccable.py latest | tee impeccable-check.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 10 ]; then
+            exit "$status"
+          fi
+          if [ "$status" -eq 10 ]; then
+            echo "update=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "update=false" >>"$GITHUB_OUTPUT"
+          fi
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Impeccable skill update available"
+          {
+            echo "The scheduled checker found a newer Impeccable skill release."
+            echo
+            echo '```'
+            cat impeccable-check.txt
+            echo '```'
+            echo
+            echo "Follow the staged review process in README.md before updating."
+          } >issue-body.md
+          existing="$(gh issue list --state open \
+            --search "\"$title\" in:title" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "$title" --body-file issue-body.md
+          fi

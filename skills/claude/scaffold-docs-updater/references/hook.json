@@ -1,0 +1,14 @@
+{
+  "_comment": "Merge this into .claude/settings.local.json under .hooks.PreToolUse. If a Bash-matcher entry already exists, append this file's single hook object to that entry's .hooks array instead of adding a second matcher block. Do not clobber existing permissions or other hooks.",
+  "matcher": "Bash",
+  "hooks": [
+    {
+      "type": "agent",
+      "if": "Bash(git commit*)",
+      "model": "claude-sonnet-5",
+      "timeout": 300,
+      "statusMessage": "docs-updater: syncing docs before commit…",
+      "prompt": "A commit is about to run in this repo. Your job is to keep this project's docs in sync with the code being committed, then let the commit proceed. YOU ARE NOT A GATE — always allow the commit to proceed; never block it, even if you find nothing to do or cannot finish.\n\nSteps:\n1. Read `.claude/agents/docs-updater.md` and follow its instructions exactly — it is the single source of truth for how to reconcile this project's docs.\n2. Inspect what is being committed with `git diff --cached --stat` and `git diff --cached`. This staged diff (NOT the working tree) is the change to document.\n3. If the staged diff only touches docs, tests, or config with no user-facing or architectural change, make no edits and approve.\n4. Otherwise, surgically update the doc files named in `.claude/agents/docs-updater.md` to match. Verify every symbol, path, constant, and name against the code with Grep/Read before writing it — never document a guess.\n5. If you edited any doc file, `git add` exactly those files so they are included in THIS commit.\n6. Approve so the commit proceeds. In your final verdict, briefly state which docs you edited or that no change was needed. $ARGUMENTS"
+    }
+  ]
+}

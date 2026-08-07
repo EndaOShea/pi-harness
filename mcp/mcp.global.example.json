@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "context7": {
+      "url": "https://mcp.context7.com/mcp",
+      "lifecycle": "lazy"
+    },
+    "example-local-server": {
+      "command": "bash",
+      "args": [
+        "-lc",
+        "exec \"$EXAMPLE_MCP_HOME/scripts/run-mcp.sh\""
+      ],
+      "lifecycle": "lazy",
+      "disabled": true
+    }
+  }
+}

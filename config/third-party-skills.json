@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "name": "impeccable",
+      "paths": [
+        ".pi/skills/impeccable"
+      ],
+      "sourceRepository": "https://github.com/pbakaus/impeccable",
+      "sourcePath": ".pi/skills/impeccable",
+      "sourceRef": "skill-v4.0.4",
+      "upstreamReleaseTag": "skill-v4.0.4",
+      "upstreamReleaseCommit": "9a949fb543d44cfb406f61bcab99d95d7f12cf1d",
+      "version": "4.0.4",
+      "license": "Apache-2.0",
+      "contentSha256": "1427222770f2c19f78471554a3f717a8946feb49e9a9882543be242c7a27570f",
+      "hashFormat": "sha256(path + NUL + content + NUL, sorted recursively)",
+      "importedInCommit": "503abbf",
+      "reviewedAt": "2026-08-07",
+      "reviewStatus": "verified byte-identical to the upstream skill-v4.0.4 release archive via the staged checker; five files missing from the legacy import (reference/degraded docs and the empty hook cache scaffold) were reviewed and restored"
+    },
+    {
+      "name": "find-skills",
+      "paths": [
+        "skills/claude/find-skills/SKILL.md",
+        "skills/codex/find-skills/SKILL.md"
+      ],
+      "sourceRepository": "https://github.com/vercel-labs/skills",
+      "sourcePath": "skills/find-skills/SKILL.md",
+      "sourceRef": "locally adapted from upstream workflow on 2026-08-07",
+      "version": "harness-1",
+      "license": "MIT",
+      "contentSha256": "0256578b642f8232824a20b52244c57bdd24b6490e35876c75be0b9f85695857",
+      "hashFormat": "sha256(SKILL.md bytes); both local copies must match",
+      "reviewedAt": "2026-08-07",
+      "reviewStatus": "adapted to require read-only discovery, explicit approval, and repository staging"
+    }
+  ]
+}
