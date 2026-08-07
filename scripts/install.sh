@@ -1001,6 +1001,21 @@ validate_installation() {
         )
     fi
 
+    if directory_has_entries "$SOURCE_EXTENSIONS"; then
+        local extension
+        local extension_name
+        while IFS= read -r -d '' extension; do
+            extension_name="$(basename "$extension")"
+            validate_link \
+                "$extension" \
+                "$TARGET_EXTENSIONS/$extension_name" \
+                "Harness extension $extension_name"
+            info "Harness extension $extension_name: valid"
+        done < <(
+            find "$SOURCE_EXTENSIONS" -mindepth 1 -maxdepth 1 -print0
+        )
+    fi
+
     [[ -f "$SETTINGS_FILE" ]] || fail "Pi settings file was not created."
     python3 -m json.tool "$SETTINGS_FILE" >/dev/null ||
         fail "Pi settings file is not valid JSON: $SETTINGS_FILE"

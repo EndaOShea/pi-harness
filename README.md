@@ -13,7 +13,7 @@ declarations are an example payload you are expected to replace. See
 
 ## Project status
 
-Version `0.1.0-rc.4` is a deployment candidate. The installer and uninstaller
+Version `0.1.0-rc.5` is a deployment candidate. The installer and uninstaller
 are covered by isolated tests for non-mutating dry runs, fresh installation,
 idempotent reruns, backup preservation, invalid-settings preflight failure,
 required MCP merging, uninstall ownership checks, and third-party provenance
@@ -35,6 +35,8 @@ update, verification, backup, and rollback procedure.
 - `.pi/skills/impeccable/` contains the vendored Impeccable frontend workflow
   and is explicitly exposed by the resource manifest.
 - `permissions/` contains the global deletion-approval hook and its matcher.
+- `extensions/` contains harness-managed Pi extensions, currently the
+  local model provider discovery for Ollama and LM Studio.
 - `mcp/` contains optional MCP examples and operating guidance.
 - `config/third-party-skills.json` records third-party provenance and hashes.
 - `THIRD_PARTY_NOTICES.md` records upstream authorship and license references.
@@ -255,6 +257,7 @@ inspect the complete diff.
 ├── docs/CAPABILITIES.md            Capability selection rules
 ├── docs/DEPLOYMENT.md              Installation and release procedure
 ├── docs/FORKING.md                 What to replace in a fork
+├── extensions/                     Harness-managed Pi extensions
 ├── mcp/                            Optional MCP guidance and examples
 ├── packages/pi-packages.txt        Pinned Pi packages
 ├── permissions/                    Global permission policy

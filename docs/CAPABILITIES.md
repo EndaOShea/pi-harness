@@ -237,3 +237,38 @@ Implementation:
   shell/interpreter policy in `permissions/destructive-patterns.js`, with
   shared matchers kept below `permissions/lib/` so the loader does not treat
   support code as a standalone policy module.
+
+## Local Model Providers
+
+Purpose:
+
+- expose models from locally installed inference servers (Ollama, LM
+  Studio, llama.cpp) in Pi without per-machine configuration edits;
+- give evaluation runs a reproducible way to select local models with
+  explicit `--provider` and `--model` flags.
+
+Usage rules:
+
+- Only localhost defaults live in Git. Endpoints beyond
+  `http://127.0.0.1` are supplied at runtime through `OLLAMA_HOST` or
+  `LMSTUDIO_BASE_URL` and are never committed.
+- A server that is not running simply contributes no provider; check
+  `curl http://127.0.0.1:11434/v1/models` (Ollama) or
+  `curl http://127.0.0.1:1234/v1/models` (LM Studio) when a model is
+  missing from `/model`.
+- After pulling or downloading a new model, restart Pi or run `/reload`.
+- Model metadata registered by discovery is conservative (32k context
+  assumption, zero cost); operators needing precise per-model settings
+  use Pi's native `~/.pi/agent/models.json`, which takes precedence.
+
+Implementation:
+
+- Ollama and LM Studio: harness-managed extension
+  `extensions/local-models.ts`, linked into `~/.pi/agent/extensions/` by
+  the installer. It probes each server's `/v1/models` at session start
+  (500 ms timeout) and registers discovered models with reasoning flags
+  inferred from model ids (`qwen3`, `gpt-oss`, `deepseek-r1`,
+  `thinking`).
+- llama.cpp: native Pi support; no harness configuration. Configure with
+  `/login llama.cpp`, manage models with `/llama`, or set
+  `LLAMA_BASE_URL` / `LLAMA_API_KEY` in the environment.

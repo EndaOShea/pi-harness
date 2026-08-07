@@ -12,6 +12,8 @@ Machinery — keep it, and pull upstream fixes when useful:
   validated, ownership-checked install/uninstall flow;
 - `scripts/check-impeccable.py` — the staged third-party update checker;
 - `permissions/` — deletion-approval hooks enforcing the contract;
+- `extensions/local-models.ts` — local model server discovery (edit the
+  reasoning-id pattern if your local model names differ);
 - `tests/` — isolated installer, uninstaller, and repository checks;
 - `.github/workflows/validate.yml` — continuous validation.
 

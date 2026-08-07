@@ -3,6 +3,14 @@
 All notable harness changes are recorded here. The project does not create a
 release tag automatically; tagging remains an explicit maintainer action.
 
+## 0.1.0-rc.5 - 2026-08-07
+
+- ported local model provider support from the upstream harness: a
+  harness-managed Pi extension discovers running Ollama and LM Studio
+  servers at session start and registers their models; llama.cpp is
+  documented as Pi-native;
+- extended installer validation to verify installed extension links.
+
 ## 0.1.0-rc.4 - 2026-08-07
 
 - extracted this repository as the public, forkable template of the harness,

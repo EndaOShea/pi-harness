@@ -23,6 +23,7 @@ version-controlled manifests.
 | Pi packages | `packages/pi-packages.txt` | Installed by `pi install` for the current Pi profile |
 | Curated resources | `config/resources.json` | `~/.pi/agent/harness/{skills,prompts}/` and `settings.json` |
 | Permission hooks | `permissions/` | Regular-file copies in `~/.pi/agent/permissions/` |
+| Pi extensions | `extensions/` | Symlinks in `~/.pi/agent/extensions/` |
 | Required MCP servers | `config/required-mcp.json` | `~/.pi/agent/mcp.json` |
 
 Set `PI_AGENT_DIR` to use a different Pi agent directory. Every destination in
@@ -206,7 +207,7 @@ never deletes newer state or old backups automatically.
 
 ## Release readiness
 
-Version `0.1.0-rc.4` is a deployment candidate. The repository validation,
+Version `0.1.0-rc.5` is a deployment candidate. The repository validation,
 isolated installer and uninstaller tests, and CI workflow are in place. A
 public release still requires an explicit maintainer decision to create a tag
 and publish release notes. A real current-user installation and any production

@@ -113,6 +113,9 @@ class RepositoryValidationTests(unittest.TestCase):
         self.assertIn("https://mcp.context7.com/mcp", readme)
         self.assertIn("https://mcp.context7.com/mcp", capabilities)
         self.assertIn("https://mcp.context7.com/mcp", mcp_docs)
+        self.assertIn("## Local Model Providers", capabilities)
+        self.assertIn("/login llama.cpp", capabilities)
+        self.assertIn("extensions/local-models.ts", capabilities)
 
     def test_no_private_reference_markers_in_tracked_files(self) -> None:
         tracked = subprocess.run(
@@ -469,13 +472,48 @@ for (const item of cases) {
         )
         self.assertEqual(result.returncode, 0, result.stdout)
 
-    def test_typescript_permission_policy_parses(self) -> None:
-        # Node 22.6+ can strip types; the loader in Pi does the same. Without
-        # this check, a syntax error in the policy would only surface at Pi
-        # load time. --check parses without resolving package imports.
-        policy = ROOT / "permissions" / "confirm-deletions.ts"
+    def test_local_models_extension_pure_functions(self) -> None:
+        script = """
+import {
+  mapDiscoveredModels,
+  normalizeBaseUrl,
+  LOCAL_PROVIDER_TARGETS,
+} from './extensions/local-models.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const models = mapDiscoveredModels([
+  { id: 'qwen3-coder:30b' },
+  { id: 'llama3.1:8b' },
+  { id: 'llama3.1:8b' },
+  { id: '  ' },
+  'junk',
+  { id: 42 },
+]);
+assert(models.length === 2, 'dedup and invalid-entry filtering, got ' + models.length);
+assert(models[0].id === 'qwen3-coder:30b', 'id preserved');
+assert(models[0].name === 'qwen3-coder:30b', 'name defaults to id');
+assert(models[0].reasoning === true, 'qwen3 marked reasoning');
+assert(models[1].reasoning === false, 'llama not marked reasoning');
+assert(mapDiscoveredModels([{ id: 'gpt-oss:20b' }])[0].reasoning === true, 'gpt-oss reasoning');
+assert(mapDiscoveredModels([{ id: 'deepseek-r1:7b' }])[0].reasoning === true, 'deepseek-r1 reasoning');
+assert(models[0].contextWindow === 32768 && models[0].maxTokens === 4096, 'default limits');
+assert(models[0].cost.input === 0 && models[0].cost.output === 0
+  && models[0].cost.cacheRead === 0 && models[0].cost.cacheWrite === 0, 'zero cost');
+assert(models[0].input.length === 1 && models[0].input[0] === 'text', 'text input only');
+assert(mapDiscoveredModels('nope').length === 0, 'non-array payload maps to empty');
+assert(mapDiscoveredModels([]).length === 0, 'empty payload maps to empty');
+assert(normalizeBaseUrl(undefined, 'http://127.0.0.1:11434') === 'http://127.0.0.1:11434', 'undefined falls back');
+assert(normalizeBaseUrl('   ', 'http://127.0.0.1:1234') === 'http://127.0.0.1:1234', 'blank falls back');
+assert(normalizeBaseUrl('127.0.0.1:11500', 'x') === 'http://127.0.0.1:11500', 'host:port gains scheme');
+assert(normalizeBaseUrl('http://box:8080/', 'x') === 'http://box:8080', 'trailing slash stripped');
+assert(normalizeBaseUrl('http://box:8080/v1', 'x') === 'http://box:8080', 'trailing /v1 stripped');
+assert(LOCAL_PROVIDER_TARGETS.map(t => t.providerId).join(',') === 'ollama,lmstudio', 'targets');
+assert(LOCAL_PROVIDER_TARGETS[0].envVar === 'OLLAMA_HOST', 'ollama env var');
+assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env var');
+"""
         result = subprocess.run(
-            ["node", "--experimental-strip-types", "--check", str(policy)],
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -485,6 +523,27 @@ for (const item of cases) {
         if result.returncode != 0 and "bad option" in result.stdout:
             self.skipTest("Node.js on PATH cannot strip TypeScript types")
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_typescript_permission_policy_parses(self) -> None:
+        # Node 22.6+ can strip types; the loader in Pi does the same. Without
+        # this check, a syntax error in the policy would only surface at Pi
+        # load time. --check parses without resolving package imports.
+        for module in (
+            ROOT / "permissions" / "confirm-deletions.ts",
+            ROOT / "extensions" / "local-models.ts",
+        ):
+            with self.subTest(module=module.name):
+                result = subprocess.run(
+                    ["node", "--experimental-strip-types", "--check", str(module)],
+                    cwd=ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+                if result.returncode != 0 and "bad option" in result.stdout:
+                    self.skipTest("Node.js on PATH cannot strip TypeScript types")
+                self.assertEqual(result.returncode, 0, result.stdout)
 
 
 class InstallerBehaviorTests(unittest.TestCase):
@@ -601,6 +660,14 @@ class InstallerBehaviorTests(unittest.TestCase):
             json.loads((agent_dir / "mcp.json").read_text(encoding="utf-8")),
             json.loads(REQUIRED_MCP.read_text(encoding="utf-8")),
         )
+
+        extension_link = agent_dir / "extensions" / "local-models.ts"
+        self.assertTrue(extension_link.is_symlink(), second.stdout)
+        self.assertEqual(
+            extension_link.resolve(),
+            (ROOT / "extensions" / "local-models.ts").resolve(),
+        )
+        self.assertIn("Harness extension local-models.ts: valid", second.stdout)
 
         backups = agent_dir / "backups"
         self.assertFalse(backups.exists(), "idempotent install unexpectedly created backups")
@@ -749,6 +816,26 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertNotIn(str(aggregate), settings["skills"])
         self.assertNotIn(str(ROOT / "skills"), settings["skills"])
 
+    def test_stale_extension_link_is_migrated_with_backup(self) -> None:
+        agent_dir = self.fixture_root / "extension-link-agent"
+        extensions_dir = agent_dir / "extensions"
+        extensions_dir.mkdir(parents=True)
+        stale_target = self.fixture_root / "elsewhere.ts"
+        stale_target.write_text("export default function () {}\n", encoding="utf-8")
+        (extensions_dir / "local-models.ts").symlink_to(stale_target)
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        installed = extensions_dir / "local-models.ts"
+        self.assertTrue(installed.is_symlink())
+        self.assertEqual(
+            installed.resolve(),
+            (ROOT / "extensions" / "local-models.ts").resolve(),
+        )
+        backups = list((agent_dir / "backups").glob("*/extensions/local-models.ts"))
+        self.assertEqual(len(backups), 1, result.stdout)
+
     def test_invalid_settings_fail_before_mutation(self) -> None:
         agent_dir = self.fixture_root / "invalid-agent"
         agent_dir.mkdir()
@@ -790,6 +877,7 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertFalse((agent_dir / "AGENTS.md").exists(), uninstall.stdout)
         self.assertFalse((agent_dir / "harness").exists(), uninstall.stdout)
         self.assertFalse((agent_dir / "permissions").exists(), uninstall.stdout)
+        self.assertFalse((agent_dir / "extensions").exists(), uninstall.stdout)
 
         settings = json.loads((agent_dir / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(settings.get("skills"), [str(user_skills)])
