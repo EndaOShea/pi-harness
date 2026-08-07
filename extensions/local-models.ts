@@ -35,6 +35,9 @@ export const LOCAL_PROVIDER_TARGETS: LocalProviderTarget[] = [
 
 const PROBE_TIMEOUT_MS = 500;
 const REASONING_ID_PATTERN = /qwen3|gpt-oss|deepseek-r1|thinking/i;
+const MAX_RESPONSE_BYTES = 1_000_000;
+const MAX_MODELS = 200;
+const CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f]/g;
 
 export interface DiscoveredModelConfig {
   id: string;
@@ -46,7 +49,13 @@ export interface DiscoveredModelConfig {
   maxTokens: number;
 }
 
-/** Accepts `host:port` or a full URL; strips trailing slashes and `/v1`. */
+/**
+ * Accepts `host:port` or a full URL; strips trailing slashes and `/v1`.
+ *
+ * A bare host with no explicit port (e.g. `localhost`, as accepted by
+ * Ollama) would otherwise resolve to port 80 and silently fail discovery,
+ * so an unspecified port is defaulted from the fallback URL's port.
+ */
 export function normalizeBaseUrl(
   raw: string | undefined,
   fallback: string,
@@ -58,7 +67,20 @@ export function normalizeBaseUrl(
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value)
     ? value
     : `http://${value}`;
-  return withScheme.replace(/\/+$/, "").replace(/\/v1$/, "");
+  const stripped = withScheme.replace(/\/+$/, "").replace(/\/v1$/, "");
+  try {
+    const url = new URL(stripped);
+    if (url.port === "") {
+      const fallbackUrl = new URL(fallback);
+      if (fallbackUrl.port !== "") {
+        url.port = fallbackUrl.port;
+        return url.toString().replace(/\/+$/, "");
+      }
+    }
+  } catch {
+    return stripped;
+  }
+  return stripped;
 }
 
 /** Pure mapping from a /v1/models `data` payload to Pi model configs. */
@@ -71,12 +93,16 @@ export function mapDiscoveredModels(
   const models: DiscoveredModelConfig[] = [];
   const seen = new Set<string>();
   for (const entry of payloadData) {
-    const id =
+    if (models.length >= MAX_MODELS) {
+      break;
+    }
+    const rawId =
       entry !== null &&
       typeof entry === "object" &&
       typeof (entry as { id?: unknown }).id === "string"
         ? ((entry as { id: string }).id ?? "").trim()
         : "";
+    const id = rawId.replace(CONTROL_CHARS_PATTERN, "");
     if (!id || seen.has(id)) {
       continue;
     }
@@ -102,6 +128,13 @@ async function probeModels(baseUrl: string): Promise<unknown> {
     if (!response.ok) {
       return undefined;
     }
+    const contentLength = response.headers.get("content-length");
+    if (contentLength !== null) {
+      const declaredSize = Number(contentLength);
+      if (Number.isFinite(declaredSize) && declaredSize > MAX_RESPONSE_BYTES) {
+        return undefined;
+      }
+    }
     const payload = (await response.json()) as { data?: unknown };
     return payload?.data;
   } catch {
@@ -126,17 +159,22 @@ export default async function localModels(
       if (models.length === 0) {
         return;
       }
-      pi.registerProvider(target.providerId, {
-        name: target.displayName,
-        baseUrl: `${baseUrl}/v1`,
-        apiKey: "local",
-        api: "openai-completions",
-        compat: {
-          supportsDeveloperRole: false,
-          supportsReasoningEffort: false,
-        },
-        models,
-      });
+      try {
+        pi.registerProvider(target.providerId, {
+          name: target.displayName,
+          baseUrl: `${baseUrl}/v1`,
+          apiKey: "local",
+          api: "openai-completions",
+          compat: {
+            supportsDeveloperRole: false,
+            supportsReasoningEffort: false,
+          },
+          models,
+        });
+      } catch {
+        // Silent-failure contract: a misbehaving registration must not
+        // block discovery of other providers or reject the factory.
+      }
     }),
   );
 }

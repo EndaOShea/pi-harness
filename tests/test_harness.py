@@ -508,6 +508,12 @@ assert(normalizeBaseUrl('   ', 'http://127.0.0.1:1234') === 'http://127.0.0.1:12
 assert(normalizeBaseUrl('127.0.0.1:11500', 'x') === 'http://127.0.0.1:11500', 'host:port gains scheme');
 assert(normalizeBaseUrl('http://box:8080/', 'x') === 'http://box:8080', 'trailing slash stripped');
 assert(normalizeBaseUrl('http://box:8080/v1', 'x') === 'http://box:8080', 'trailing /v1 stripped');
+assert(normalizeBaseUrl('localhost', 'http://127.0.0.1:11434') === 'http://localhost:11434', 'bare host gains fallback port');
+assert(normalizeBaseUrl('box:9999', 'http://127.0.0.1:11434') === 'http://box:9999', 'explicit port preserved');
+const controlCharId = mapDiscoveredModels([{ id: 'bad\\u0007id' }]);
+assert(controlCharId.length === 1 && controlCharId[0].id === 'badid', 'control chars stripped from id, got ' + JSON.stringify(controlCharId));
+assert(mapDiscoveredModels([{ id: '\\u0007' }]).length === 0, 'control-char-only id skipped');
+assert(mapDiscoveredModels(Array.from({ length: 250 }, (_, i) => ({ id: 'm' + i }))).length === 200, '200-model cap enforced');
 assert(LOCAL_PROVIDER_TARGETS.map(t => t.providerId).join(',') === 'ollama,lmstudio', 'targets');
 assert(LOCAL_PROVIDER_TARGETS[0].envVar === 'OLLAMA_HOST', 'ollama env var');
 assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env var');
