@@ -53,7 +53,9 @@ const gitHardReset = matchCommand({
 const gitCheckoutDiscard = matchCommand({
   program: "git",
   subcommands: ["checkout"],
-  where: (command) => command.hasFlag("--", "-f", "--force"),
+  where: (command) =>
+    command.hasFlag("-f", "--force") ||
+    command.args.some((argument) => argument.text === "--"),
   onMatch: requestForCommands,
 });
 
@@ -66,17 +68,20 @@ export default function permissions(api: PermissionsAPI) {
 
     handler(input) {
       return matchTool(input.tool, {
-        bash(tool) {
-          const structuredDecision =
-            directDeletion(tool) ??
-            gioTrash(tool) ??
-            findDeletion(tool) ??
-            gitCleanOrRestore(tool) ??
-            gitHardReset(tool) ??
-            gitCheckoutDiscard(tool);
-
-          if (structuredDecision) {
-            return structuredDecision;
+        async bash(tool) {
+          const matchers = [
+            directDeletion,
+            gioTrash,
+            findDeletion,
+            gitCleanOrRestore,
+            gitHardReset,
+            gitCheckoutDiscard,
+          ];
+          for (const matcher of matchers) {
+            const decision = await matcher(tool);
+            if (decision) {
+              return decision;
+            }
           }
         },
       });
