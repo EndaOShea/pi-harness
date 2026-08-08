@@ -229,10 +229,12 @@ Usage rules:
   the other.
 - Approval is limited to the exact command and targets shown at approval time.
 - Never route destructive work through another runtime to avoid detection.
-- File-tool access to protected paths and secret files requires per-call
-  approval: the protected-directory list is the `PROTECTED_DIRECTORIES`
-  constant at the top of `permissions/protected-paths.ts`, and the
-  generic secret-file rules live in `permissions/lib/path-matchers.js`.
+- Write, edit, read, and grep access to protected paths and secret files
+  requires per-call approval (find and ls are deliberately ungated — they
+  return names, not contents): the protected-directory list is the
+  `PROTECTED_DIRECTORIES` constant at the top of
+  `permissions/protected-paths.ts`, and the generic secret-file rules live
+  in `permissions/lib/path-matchers.js`.
 
 Implementation:
 

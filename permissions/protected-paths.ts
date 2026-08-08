@@ -73,6 +73,28 @@ export default function permissions(api: PermissionsAPI) {
             rejectLabel: "Reject read",
           });
         },
+        grep(tool) {
+          if (!tool.absolutePath) {
+            return undefined;
+          }
+          const directory = findProtectedDirectory(
+            tool.absolutePath,
+            HOME,
+            PROTECTED_DIRECTORIES,
+          );
+          const rule = isSecretFile(tool.absolutePath, HOME);
+          if (!directory && !rule) {
+            return undefined;
+          }
+          return request({
+            guidance:
+              `This search targets ${rule ?? directory} and returns matching ` +
+              "file contents into model context. Approval applies only to " +
+              "this tool call.",
+            approveLabel: "Approve search",
+            rejectLabel: "Reject search",
+          });
+        },
       });
     },
   });

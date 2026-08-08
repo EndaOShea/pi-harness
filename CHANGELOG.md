@@ -9,7 +9,7 @@ release tag automatically; tagging remains an explicit maintainer action.
   left five of its six matchers unreachable, and worked around an
   upstream `hasFlag("--")` sentinel bug for `git checkout --`;
 - ported file-tool enforcement from the upstream harness: per-call
-  approval for Write/Edit into protected directories and Read of
+  approval for Write/Edit into protected directories and Read/Grep of
   secret-shaped files, with a generic protected-directory list that
   forks extend;
 - added handler-level integration tests for the permission policies

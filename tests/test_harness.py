@@ -738,13 +738,20 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
                       "absolutePath": "/tmp/project/.env.example", "input": {}}},
             {"tool": {"toolName": "read", "path": "README.md",
                       "absolutePath": "/tmp/project/README.md", "input": {}}},
+            {"tool": {"toolName": "grep", "path": ".ssh",
+                      "absolutePath": f"{home}/.ssh", "input": {}}},
+            {"tool": {"toolName": "grep", "path": ".env",
+                      "absolutePath": "/tmp/project/.env", "input": {}}},
+            {"tool": {"toolName": "grep", "path": "src",
+                      "absolutePath": "/tmp/project/src", "input": {}}},
         ]
         decisions = run_policy_cases(
             self, "permissions/protected-paths.ts", cases
         )
         self.assertEqual(
             decisions,
-            ["request", "request", None, "request", None, None],
+            ["request", "request", None, "request", None, None,
+             "request", "request", None],
         )
 
     def test_confirm_deletions_policy_decisions(self) -> None:
