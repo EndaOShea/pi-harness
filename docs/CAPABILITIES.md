@@ -229,14 +229,20 @@ Usage rules:
   the other.
 - Approval is limited to the exact command and targets shown at approval time.
 - Never route destructive work through another runtime to avoid detection.
+- File-tool access to protected paths and secret files requires per-call
+  approval: the protected-directory list is the `PROTECTED_DIRECTORIES`
+  constant at the top of `permissions/protected-paths.ts`, and the
+  generic secret-file rules live in `permissions/lib/path-matchers.js`.
 
 Implementation:
 
 - `npm:@thurstonsand/pi-permissions@0.9.0`
-- Direct-command policy in `permissions/confirm-deletions.ts` and indirect
-  shell/interpreter policy in `permissions/destructive-patterns.js`, with
-  shared matchers kept below `permissions/lib/` so the loader does not treat
-  support code as a standalone policy module.
+- Direct-command policy in `permissions/confirm-deletions.ts`, indirect
+  shell/interpreter policy in `permissions/destructive-patterns.js`, and
+  file-tool protected-path/secret-read policy in
+  `permissions/protected-paths.ts`, with shared matchers kept below
+  `permissions/lib/` so the loader does not treat support code as a
+  standalone policy module.
 
 ## Local Model Providers
 

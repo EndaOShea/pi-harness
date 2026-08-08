@@ -30,6 +30,129 @@ REQUIRED_MCP = ROOT / "config" / "required-mcp.json"
 IMPECCABLE_CHECKER = ROOT / "scripts" / "check-impeccable.py"
 VERSION_FILE = ROOT / "VERSION"
 
+PI_AGENT_NPM_DIR = Path(
+    os.environ.get("PI_AGENT_NPM_DIR", str(Path.home() / ".pi" / "agent" / "npm"))
+)
+PI_PERMISSIONS_LIB = (
+    PI_AGENT_NPM_DIR / "node_modules" / "@thurstonsand" / "pi-permissions"
+)
+
+
+def pi_package_node_modules() -> Path | None:
+    """Locate the nested node_modules of the installed Pi package.
+
+    The pi-permissions library resolves its @earendil-works peer
+    dependencies at runtime; they live inside the globally installed
+    pi-coding-agent package, found by resolving the `pi` binary.
+    """
+    pi_binary = shutil.which("pi")
+    if pi_binary is None:
+        return None
+    resolved = Path(pi_binary).resolve()
+    for parent in resolved.parents:
+        if parent.name == "pi-coding-agent":
+            nested = parent / "node_modules"
+            return nested if nested.is_dir() else None
+    return None
+
+
+POLICY_HARNESS_SCRIPT = """
+import { createJiti } from 'jiti';
+const [policyPath, casesJson] = process.argv.slice(1);
+const jiti = createJiti(import.meta.url);
+const mod = await jiti.import(policyPath, { default: true });
+const hooks = [];
+mod({ onToolUse(hook) { hooks.push(hook); } });
+const cases = JSON.parse(casesJson);
+const results = [];
+for (const c of cases) {
+  let decision;
+  for (const hook of hooks) {
+    decision = await hook.handler({
+      tool: c.tool,
+      cwd: process.cwd(),
+      permissionRoot: process.cwd(),
+    });
+    if (decision) break;
+  }
+  results.push(decision ? decision.decision : null);
+}
+console.log('RESULTS:' + JSON.stringify(results));
+"""
+
+
+def run_policy_cases(
+    testcase: unittest.TestCase, policy_relative: str, cases: list[dict]
+) -> list:
+    """Execute a permission policy against synthetic tool inputs.
+
+    Builds a self-contained fixture: the pi-permissions library is
+    copied in (Node refuses to type-strip files under node_modules, so
+    jiti transpiles it instead — exactly how Pi loads these policies),
+    its support packages are symlinked from the local Pi install, and
+    the policy plus permissions/lib are copied beside it.
+    """
+    if not PI_PERMISSIONS_LIB.is_dir():
+        testcase.skipTest(
+            "pi-permissions library is not installed under "
+            f"{PI_AGENT_NPM_DIR}"
+        )
+    pi_nested = pi_package_node_modules()
+    if pi_nested is None:
+        testcase.skipTest(
+            "pi-coding-agent package (peer dependencies) not found via PATH"
+        )
+    fixture = retained_on_failure_tmpdir(testcase, "policy-integration-")
+    node_modules = fixture / "node_modules"
+    (node_modules / "@thurstonsand").mkdir(parents=True)
+    (node_modules / "@earendil-works").mkdir()
+    shutil.copytree(
+        PI_PERMISSIONS_LIB, node_modules / "@thurstonsand" / "pi-permissions"
+    )
+    for entry in (PI_AGENT_NPM_DIR / "node_modules").iterdir():
+        if entry.name in ("@thurstonsand", ".bin"):
+            continue
+        target = node_modules / entry.name
+        if not target.exists():
+            target.symlink_to(entry, target_is_directory=entry.is_dir())
+    for entry in (pi_nested / "@earendil-works").iterdir():
+        (node_modules / "@earendil-works" / entry.name).symlink_to(
+            entry, target_is_directory=True
+        )
+    (node_modules / "@earendil-works" / "pi-coding-agent").symlink_to(
+        pi_nested.parent, target_is_directory=True
+    )
+    for entry in pi_nested.iterdir():
+        if entry.name in ("@earendil-works", ".bin"):
+            continue
+        target = node_modules / entry.name
+        if not target.exists():
+            target.symlink_to(entry, target_is_directory=entry.is_dir())
+    policy_copy = fixture / Path(policy_relative).name
+    shutil.copy2(ROOT / policy_relative, policy_copy)
+    shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
+    result = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            POLICY_HARNESS_SCRIPT,
+            str(policy_copy),
+            json.dumps(cases),
+        ],
+        cwd=fixture,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    testcase.assertEqual(result.returncode, 0, result.stdout)
+    payload = [
+        line for line in result.stdout.splitlines() if line.startswith("RESULTS:")
+    ]
+    testcase.assertEqual(len(payload), 1, result.stdout)
+    return json.loads(payload[0][len("RESULTS:"):])
+
 
 def harness_documents() -> list[Path]:
     documents = [
@@ -116,6 +239,8 @@ class RepositoryValidationTests(unittest.TestCase):
         self.assertIn("## Local Model Providers", capabilities)
         self.assertIn("/login llama.cpp", capabilities)
         self.assertIn("extensions/local-models.ts", capabilities)
+        self.assertIn("permissions/protected-paths.ts", capabilities)
+        self.assertIn("PROTECTED_DIRECTORIES", capabilities)
 
     def test_no_private_reference_markers_in_tracked_files(self) -> None:
         tracked = subprocess.run(
@@ -472,6 +597,74 @@ for (const item of cases) {
         )
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_path_matchers(self) -> None:
+        script = """
+import {
+  expandHome,
+  findProtectedDirectory,
+  isSecretFile,
+} from './permissions/lib/path-matchers.js';
+const HOME = '/home/tester';
+const DIRS = ['~/Archives', '~/.ssh', '~/.config', '~/.local/share', '~/Models'];
+const cases = JSON.parse(process.argv[1]);
+for (const c of cases) {
+  const actual = c.fn === 'protected'
+    ? findProtectedDirectory(c.path, HOME, c.dirs ?? DIRS)
+    : c.fn === 'secret'
+      ? isSecretFile(c.path, HOME)
+      : expandHome(c.path, HOME);
+  const matched = actual !== null;
+  if (c.expected !== undefined && actual !== c.expected) {
+    console.error(JSON.stringify({ ...c, actual }));
+    process.exit(1);
+  }
+  if (c.matches !== undefined && matched !== c.matches) {
+    console.error(JSON.stringify({ ...c, actual }));
+    process.exit(1);
+  }
+}
+"""
+        cases = [
+            {"fn": "expand", "path": "~/.ssh", "expected": "/home/tester/.ssh"},
+            {"fn": "expand", "path": "/abs/path", "expected": "/abs/path"},
+            {"fn": "protected", "path": "/home/tester/.ssh/config", "expected": "~/.ssh"},
+            {"fn": "protected", "path": "/home/tester/.ssh", "expected": "~/.ssh"},
+            {"fn": "protected", "path": "/home/tester/Models/q.gguf", "expected": "~/Models"},
+            {"fn": "protected", "path": "/home/tester/.local/share/app/db", "expected": "~/.local/share"},
+            {"fn": "protected", "path": "/home/tester/.configuration/x", "matches": False},
+            {"fn": "protected", "path": "/home/tester/project/main.py", "matches": False},
+            {"fn": "protected", "path": "/etc/passwd", "matches": False},
+            {"fn": "protected", "path": "/home/tester/.ssh/config", "dirs": [], "matches": False},
+            {"fn": "secret", "path": "/home/tester/project/.env", "matches": True},
+            {"fn": "secret", "path": "/home/tester/project/.env.local", "matches": True},
+            {"fn": "secret", "path": "/home/tester/project/.env.example", "matches": False},
+            {"fn": "secret", "path": "/home/tester/project/.env.sample", "matches": False},
+            {"fn": "secret", "path": "/home/tester/project/.env.template", "matches": False},
+            {"fn": "secret", "path": "/home/tester/.ssh/known_hosts", "matches": True},
+            {"fn": "secret", "path": "/home/tester/.ssh/id_rsa.pub", "matches": False},
+            {"fn": "secret", "path": "/home/tester/.ssh/id_ed25519.pub", "matches": False},
+            {"fn": "secret", "path": "/home/tester/keys/id_rsa", "matches": True},
+            {"fn": "secret", "path": "/home/tester/keys/id_ed25519.bak", "matches": True},
+            {"fn": "secret", "path": "/home/tester/keys/id_rsa.pub", "matches": False},
+            {"fn": "secret", "path": "/home/tester/certs/server.pem", "matches": True},
+            {"fn": "secret", "path": "/home/tester/certs/tls.key", "matches": True},
+            {"fn": "secret", "path": "/home/tester/.netrc", "matches": True},
+            {"fn": "secret", "path": "/home/tester/.aws/credentials", "matches": True},
+            {"fn": "secret", "path": "/home/tester/.aws/config", "matches": False},
+            {"fn": "secret", "path": "/home/tester/.pi/agent/auth.json", "matches": True},
+            {"fn": "secret", "path": "/home/tester/project/README.md", "matches": False},
+            {"fn": "secret", "path": "/home/tester/project/monkey.keyboard", "matches": False},
+        ]
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script, json.dumps(cases)],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def test_local_models_extension_pure_functions(self) -> None:
         script = """
 import {
@@ -530,12 +723,48 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
             self.skipTest("Node.js on PATH cannot strip TypeScript types")
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_protected_paths_policy_decisions(self) -> None:
+        home = str(Path.home())
+        cases = [
+            {"tool": {"toolName": "write", "path": ".ssh/config",
+                      "absolutePath": f"{home}/.ssh/config", "input": {}}},
+            {"tool": {"toolName": "edit", "path": ".config/app/settings.json",
+                      "absolutePath": f"{home}/.config/app/settings.json", "input": {}}},
+            {"tool": {"toolName": "write", "path": "src/main.py",
+                      "absolutePath": "/tmp/project/src/main.py", "input": {}}},
+            {"tool": {"toolName": "read", "path": ".env",
+                      "absolutePath": "/tmp/project/.env", "input": {}}},
+            {"tool": {"toolName": "read", "path": ".env.example",
+                      "absolutePath": "/tmp/project/.env.example", "input": {}}},
+            {"tool": {"toolName": "read", "path": "README.md",
+                      "absolutePath": "/tmp/project/README.md", "input": {}}},
+        ]
+        decisions = run_policy_cases(
+            self, "permissions/protected-paths.ts", cases
+        )
+        self.assertEqual(
+            decisions,
+            ["request", "request", None, "request", None, None],
+        )
+
+    def test_confirm_deletions_policy_decisions(self) -> None:
+        cases = [
+            {"tool": {"toolName": "bash", "command": "rm -rf build", "input": {}}},
+            {"tool": {"toolName": "bash", "command": "git checkout -f", "input": {}}},
+            {"tool": {"toolName": "bash", "command": "ls -la", "input": {}}},
+        ]
+        decisions = run_policy_cases(
+            self, "permissions/confirm-deletions.ts", cases
+        )
+        self.assertEqual(decisions, ["request", "request", None])
+
     def test_typescript_permission_policy_parses(self) -> None:
         # Node 22.6+ can strip types; the loader in Pi does the same. Without
         # this check, a syntax error in the policy would only surface at Pi
         # load time. --check parses without resolving package imports.
         for module in (
             ROOT / "permissions" / "confirm-deletions.ts",
+            ROOT / "permissions" / "protected-paths.ts",
             ROOT / "extensions" / "local-models.ts",
         ):
             with self.subTest(module=module.name):

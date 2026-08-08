@@ -13,7 +13,7 @@ declarations are an example payload you are expected to replace. See
 
 ## Project status
 
-Version `0.1.0-rc.5` is a deployment candidate. The installer and uninstaller
+Version `0.1.0-rc.6` is a deployment candidate. The installer and uninstaller
 are covered by isolated tests for non-mutating dry runs, fresh installation,
 idempotent reruns, backup preservation, invalid-settings preflight failure,
 required MCP merging, uninstall ownership checks, and third-party provenance

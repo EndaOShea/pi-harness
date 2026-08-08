@@ -3,6 +3,19 @@
 All notable harness changes are recorded here. The project does not create a
 release tag automatically; tagging remains an explicit maintainer action.
 
+## 0.1.0-rc.6 - 2026-08-08
+
+- fixed a critical promise short-circuit in `confirm-deletions.ts` that
+  left five of its six matchers unreachable, and worked around an
+  upstream `hasFlag("--")` sentinel bug for `git checkout --`;
+- ported file-tool enforcement from the upstream harness: per-call
+  approval for Write/Edit into protected directories and Read of
+  secret-shaped files, with a generic protected-directory list that
+  forks extend;
+- added handler-level integration tests for the permission policies
+  (skipped where the pi-permissions library is absent) and CI-safe pure
+  matcher tests.
+
 ## 0.1.0-rc.5 - 2026-08-07
 
 - ported local model provider support from the upstream harness: a

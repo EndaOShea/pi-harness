@@ -11,7 +11,9 @@ Machinery — keep it, and pull upstream fixes when useful:
 - `scripts/install.sh`, `scripts/uninstall.sh`, `scripts/validate.sh` — the
   validated, ownership-checked install/uninstall flow;
 - `scripts/check-impeccable.py` — the staged third-party update checker;
-- `permissions/` — deletion-approval hooks enforcing the contract;
+- `permissions/` — deletion-approval and protected-path hooks enforcing
+  the contract (edit `PROTECTED_DIRECTORIES` in `protected-paths.ts` to
+  match your own protected locations);
 - `extensions/local-models.ts` — local model server discovery (edit the
   reasoning-id pattern if your local model names differ);
 - `tests/` — isolated installer, uninstaller, and repository checks;
