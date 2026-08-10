@@ -1,0 +1,40 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.79",
+        "--headless",
+        "--isolated",
+        "--browser",
+        "firefox",
+        "--block-service-workers",
+        "--output-mode",
+        "stdout"
+      ],
+      "lifecycle": "lazy",
+      "disabled": true,
+      "includeTools": [
+        "browser_close",
+        "browser_console_messages",
+        "browser_find",
+        "browser_hover",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_snapshot",
+        "browser_take_screenshot",
+        "browser_wait_for",
+        "browser_resize",
+        "browser_tabs",
+        "browser_click",
+        "browser_type",
+        "browser_fill_form",
+        "browser_press_key",
+        "browser_select_option",
+        "browser_handle_dialog",
+        "browser_drag"
+      ]
+    }
+  }
+}

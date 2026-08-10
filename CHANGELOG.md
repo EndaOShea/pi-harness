@@ -3,6 +3,16 @@
 All notable harness changes are recorded here. The project does not create a
 release tag automatically; tagging remains an explicit maintainer action.
 
+## Unreleased
+
+- upgraded the required web research extension to `pi-web-access@0.19.0`,
+  retaining exact package pinning while gaining its stricter remote-fetch
+  routing, grounded answer mode, raw fetch mode, and bounded content search;
+- added a disabled, optional Playwright MCP application template pinned to
+  `@playwright/mcp@0.0.79`; it uses headless isolated Firefox by default and
+  exposes an explicit tool allowlist that omits file transfer and arbitrary
+  JavaScript execution.
+
 ## 0.1.0-rc.6 - 2026-08-08
 
 - fixed a critical promise short-circuit in `confirm-deletions.ts` that

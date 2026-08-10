@@ -27,6 +27,7 @@ PRIVATE_REFERENCE_MARKERS: tuple[str, ...] = (
 RESOURCES = ROOT / "config" / "resources.json"
 PACKAGE_MANIFEST = ROOT / "packages" / "pi-packages.txt"
 REQUIRED_MCP = ROOT / "config" / "required-mcp.json"
+OPTIONAL_PLAYWRIGHT = ROOT / "mcp" / "playwright.optional.example.json"
 IMPECCABLE_CHECKER = ROOT / "scripts" / "check-impeccable.py"
 VERSION_FILE = ROOT / "VERSION"
 
@@ -353,6 +354,33 @@ class RepositoryValidationTests(unittest.TestCase):
                 r"^git:.*@v?\d+\.\d+\.\d+$",
                 f"git source {source} is pinned to a mutable tag; pin the commit",
             )
+
+        self.assertIn("npm:pi-web-access@0.19.0", sources)
+
+    def test_optional_playwright_is_disabled_and_safely_scoped(self) -> None:
+        config = json.loads(OPTIONAL_PLAYWRIGHT.read_text(encoding="utf-8"))
+        server = config["mcpServers"]["playwright"]
+        self.assertEqual(server["command"], "npx")
+        self.assertEqual(server["lifecycle"], "lazy")
+        self.assertIs(server["disabled"], True)
+        self.assertEqual(server["args"], [
+            "-y", "@playwright/mcp@0.0.79", "--headless", "--isolated",
+            "--browser", "firefox", "--block-service-workers",
+            "--output-mode", "stdout",
+        ])
+        included = set(server["includeTools"])
+        self.assertTrue({
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_close",
+        }.issubset(included))
+        self.assertTrue(included.isdisjoint({
+            "browser_run_code_unsafe", "browser_evaluate",
+            "browser_file_upload", "browser_drop",
+        }))
+
+        docs = (ROOT / "mcp" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("@playwright/mcp@0.0.79", docs)
+        self.assertIn("playwright@1.63.0-alpha-2026-08-05 install firefox", docs)
 
     def test_required_setup_includes_context7_and_impeccable(self) -> None:
         mcp = json.loads(REQUIRED_MCP.read_text(encoding="utf-8"))

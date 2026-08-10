@@ -76,10 +76,19 @@ The following packages are installed from exact npm versions declared in
 | --- | --- | --- |
 | `@narumitw/pi-usage` | `0.40.1` | https://github.com/narumiruna/pi-extensions/tree/main/extensions/pi-usage |
 | `pi-mcp-adapter` | `2.16.0` | https://github.com/nicobailon/pi-mcp-adapter |
-| `pi-web-access` | `0.17.0` | https://github.com/nicobailon/pi-web-access |
+| `pi-web-access` | `0.19.0` | https://github.com/nicobailon/pi-web-access |
 | `pi-subagents` | `0.38.0` | https://github.com/nicobailon/pi-subagents |
 | `@thurstonsand/pi-permissions` | `0.9.0` | https://www.npmjs.com/package/@thurstonsand/pi-permissions |
 
 These packages are not vendored in the harness. Their package archives and
 license texts are supplied by their respective publishers when Pi installs
 the exact manifest references.
+
+## Optional Playwright MCP application
+
+The disabled template at `mcp/playwright.optional.example.json` references
+`@playwright/mcp@0.0.79` from Microsoft under the Apache-2.0 license:
+https://github.com/microsoft/playwright-mcp
+
+It is not installed by the harness package manifest. Enabling the MCP server
+and downloading its selected browser binary are separate operator actions.

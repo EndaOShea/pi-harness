@@ -9,6 +9,7 @@ environments, model data, and secrets are maintained outside this repository.
 | File | Purpose |
 | --- | --- |
 | [`mcp.global.example.json`](mcp.global.example.json) | Portable shared MCP template. It enables Context7 and includes a disabled local stdio launcher placeholder. |
+| [`playwright.optional.example.json`](playwright.optional.example.json) | Disabled, pinned Playwright MCP application using isolated headless Firefox and an explicit tool allowlist. |
 | [`mcp.local.example.json`](mcp.local.example.json) | Reserved project-local configuration placeholder; it is currently empty. |
 | [`servers.example.json`](servers.example.json) | Reserved server configuration placeholder; it is currently empty. |
 
@@ -28,6 +29,11 @@ them deliberately:
 Use a project's `.mcp.json` for project-specific, write-capable, or
 infrastructure-sensitive servers. Global servers should use lazy startup and
 should be read-only whenever possible.
+
+Playwright is intentionally absent from the required and shared global
+templates. Its dedicated optional template must be merged explicitly when
+browser automation is needed; normal harness installation never downloads a
+browser or exposes browser tools.
 
 Later project-specific Pi layers may override global definitions. Consult the
 pinned Pi MCP Adapter documentation before relying on precedence beyond these
@@ -90,6 +96,51 @@ For higher limits, extend only the installed private configuration:
 
 Do not commit the environment variable's value.
 
+## Optional server
+
+### Playwright browser automation
+
+The optional Playwright application provides rendered-page inspection and
+interaction through the official Microsoft MCP server. It complements
+`pi-web-access`; it does not replace web search or static content extraction.
+
+The reviewed template:
+
+- pins `@playwright/mcp@0.0.79` and uses lazy stdio startup;
+- selects Firefox, not Chromium;
+- runs headless with an isolated in-memory browser profile;
+- blocks service workers and keeps diagnostic output on stdout;
+- allowlists the browser tools required for navigation and UI testing;
+- does not expose `browser_run_code_unsafe`, `browser_evaluate`, file
+  upload/drop, cookie/storage controls, network mocking, or other newly added
+  tools unless the template is reviewed and updated deliberately.
+
+It is disabled in the example. To install it, first validate and review the
+exact definition:
+
+```bash
+python3 -m json.tool mcp/playwright.optional.example.json
+```
+
+Merge its `playwright` entry into either a project's `.mcp.json` (preferred)
+or the user-global `~/.config/mcp/mcp.json`; never overwrite unrelated MCP
+servers. Remove `"disabled": true` only after approving the pinned `npx`
+package execution.
+
+The MCP package and the browser binary are separate. Downloading Firefox is a
+large, networked operation and is never performed by the harness installer.
+After reviewing the exact version and destination, the operator may run:
+
+```bash
+npx -y playwright@1.63.0-alpha-2026-08-05 install firefox
+```
+
+Restart Pi after enabling the server. Playwright MCP is not a security
+boundary: use it only on sites appropriate for an isolated unauthenticated
+browser, treat page content as untrusted, and obtain approval before form
+submission or any externally visible action. Do not attach a personal browser
+profile or add unrestricted file access.
+
 ## Adding your own servers
 
 Fork-specific servers belong in your fork of this file set, following the
@@ -139,6 +190,15 @@ Reconnect a configured server when needed:
 ```text
 /mcp reconnect context7
 ```
+
+An explicitly enabled Playwright application can be checked separately:
+
+```text
+/mcp reconnect playwright
+```
+
+Use a read-only navigation and snapshot first. Confirm that `/mcp tools`
+does not list arbitrary-code or file-transfer tools for the server.
 
 Use read-only test prompts when checking a server.
 

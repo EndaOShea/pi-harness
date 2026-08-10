@@ -37,7 +37,8 @@ update, verification, backup, and rollback procedure.
 - `permissions/` contains the global deletion-approval hook and its matcher.
 - `extensions/` contains harness-managed Pi extensions, currently the
   local model provider discovery for Ollama and LM Studio.
-- `mcp/` contains optional MCP examples and operating guidance.
+- `mcp/` contains optional MCP examples and operating guidance, including a
+  disabled Playwright browser-automation application.
 - `config/third-party-skills.json` records third-party provenance and hashes.
 - `THIRD_PARTY_NOTICES.md` records upstream authorship and license references.
 

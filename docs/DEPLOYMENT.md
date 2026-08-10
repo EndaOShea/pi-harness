@@ -25,6 +25,7 @@ version-controlled manifests.
 | Permission hooks | `permissions/` | Regular-file copies in `~/.pi/agent/permissions/` |
 | Pi extensions | `extensions/` | Symlinks in `~/.pi/agent/extensions/` |
 | Required MCP servers | `config/required-mcp.json` | `~/.pi/agent/mcp.json` |
+| Optional Playwright app | `mcp/playwright.optional.example.json` | Manually merged into an MCP configuration only when requested |
 
 Set `PI_AGENT_DIR` to use a different Pi agent directory. Every destination in
 this guide then moves below that directory.
@@ -82,6 +83,10 @@ the reviewed command invocation is the approval boundary.
 
 Restart Pi after installation so packages, skills, instructions, permissions,
 and MCP configuration are loaded in a fresh session.
+
+The normal installer does not configure Playwright or download a browser.
+Follow the optional application procedure in `mcp/README.md` only when a task
+requires rendered-page interaction or browser-based UI verification.
 
 ## Installer modes
 
