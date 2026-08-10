@@ -166,6 +166,11 @@ Requirements:
 - ShellCheck, optionally, for static shell analysis (always runs in CI);
 - Pi only when package installation is not skipped.
 
+The harness's Python tooling — tests and the Impeccable checker — is
+stdlib-only by design: no virtual environment, conda environment, or package
+installation is needed, and the system `python3` and `node` on PATH are
+exactly what runs.
+
 Run all repository and isolated installer checks:
 
 ```bash
