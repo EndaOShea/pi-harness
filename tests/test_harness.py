@@ -366,7 +366,6 @@ class RepositoryValidationTests(unittest.TestCase):
         self.assertEqual(server["args"], [
             "-y", "@playwright/mcp@0.0.79", "--headless", "--isolated",
             "--browser", "firefox", "--block-service-workers",
-            "--output-mode", "stdout",
         ])
         included = set(server["includeTools"])
         self.assertTrue({

@@ -109,7 +109,7 @@ The reviewed template:
 - pins `@playwright/mcp@0.0.79` and uses lazy stdio startup;
 - selects Firefox, not Chromium;
 - runs headless with an isolated in-memory browser profile;
-- blocks service workers and keeps diagnostic output on stdout;
+- blocks service workers and uses the default stdio transport;
 - allowlists the browser tools required for navigation and UI testing;
 - does not expose `browser_run_code_unsafe`, `browser_evaluate`, file
   upload/drop, cookie/storage controls, network mocking, or other newly added

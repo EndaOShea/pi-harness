@@ -9,9 +9,7 @@
         "--isolated",
         "--browser",
         "firefox",
-        "--block-service-workers",
-        "--output-mode",
-        "stdout"
+        "--block-service-workers"
       ],
       "lifecycle": "lazy",
       "disabled": true,
