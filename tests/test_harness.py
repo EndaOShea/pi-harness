@@ -630,17 +630,20 @@ for (const item of cases) {
 import {
   expandHome,
   findProtectedDirectory,
+  findSecretPathReferences,
   isSecretFile,
 } from './permissions/lib/path-matchers.js';
 const HOME = '/home/tester';
-const DIRS = ['~/Archives', '~/.ssh', '~/.config', '~/.local/share', '~/Models'];
+const DIRS = ['~/Archives', '~/.pi', '~/.ssh', '~/.config', '~/.local/share', '~/Models'];
 const cases = JSON.parse(process.argv[1]);
 for (const c of cases) {
   const actual = c.fn === 'protected'
     ? findProtectedDirectory(c.path, HOME, c.dirs ?? DIRS)
     : c.fn === 'secret'
       ? isSecretFile(c.path, HOME)
-      : expandHome(c.path, HOME);
+      : c.fn === 'bashSecrets'
+        ? (findSecretPathReferences(c.path, HOME).length > 0 ? 'hit' : null)
+        : expandHome(c.path, HOME);
   const matched = actual !== null;
   if (c.expected !== undefined && actual !== c.expected) {
     console.error(JSON.stringify({ ...c, actual }));
@@ -682,6 +685,24 @@ for (const c of cases) {
             {"fn": "secret", "path": "/home/tester/.pi/agent/auth.json", "matches": True},
             {"fn": "secret", "path": "/home/tester/project/README.md", "matches": False},
             {"fn": "secret", "path": "/home/tester/project/monkey.keyboard", "matches": False},
+            {"fn": "protected", "path": "/home/tester/.pi/agent/settings.json", "expected": "~/.pi"},
+            {"fn": "protected", "path": "/home/tester/.pinned/notes.md", "matches": False},
+            {"fn": "bashSecrets", "path": "cat ~/.pi/agent/auth.json", "matches": True},
+            {"fn": "bashSecrets", "path": "cat /home/tester/.pi/agent/auth.json", "matches": True},
+            {"fn": "bashSecrets", "path": "grep key $HOME/.ssh/id_rsa", "matches": True},
+            {"fn": "bashSecrets", "path": "head -3 ${HOME}/.ssh/config", "matches": True},
+            {"fn": "bashSecrets", "path": "cat .env", "matches": True},
+            {"fn": "bashSecrets", "path": "head -5 secrets/.env.production", "matches": True},
+            {"fn": "bashSecrets", "path": "openssl rsa -in certs/server.key", "matches": True},
+            {"fn": "bashSecrets", "path": "sops --input=deploy/.env", "matches": True},
+            {"fn": "bashSecrets", "path": "base64 < ~/.aws/credentials", "matches": True},
+            {"fn": "bashSecrets", "path": "cat 'deploy/.env' | wc -l", "matches": True},
+            {"fn": "bashSecrets", "path": "cat .env.example", "matches": False},
+            {"fn": "bashSecrets", "path": "cat README.md", "matches": False},
+            {"fn": "bashSecrets", "path": "python3 -m json.tool settings.json", "matches": False},
+            {"fn": "bashSecrets", "path": "ls -la src/", "matches": False},
+            {"fn": "bashSecrets", "path": "cat ~/.ssh/id_ed25519.pub", "matches": False},
+            {"fn": "bashSecrets", "path": "git log --oneline", "matches": False},
         ]
         result = subprocess.run(
             ["node", "--input-type=module", "-e", script, json.dumps(cases)],
@@ -772,6 +793,14 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
                       "absolutePath": "/tmp/project/.env", "input": {}}},
             {"tool": {"toolName": "grep", "path": "src",
                       "absolutePath": "/tmp/project/src", "input": {}}},
+            {"tool": {"toolName": "write", "path": ".pi/agent/settings.json",
+                      "absolutePath": f"{home}/.pi/agent/settings.json", "input": {}}},
+            {"tool": {"toolName": "bash",
+                      "command": f"cat {home}/.pi/agent/auth.json", "input": {}}},
+            {"tool": {"toolName": "bash",
+                      "command": "cat ~/.pi/agent/auth.json", "input": {}}},
+            {"tool": {"toolName": "bash",
+                      "command": "python3 -m unittest", "input": {}}},
         ]
         decisions = run_policy_cases(
             self, "permissions/protected-paths.ts", cases
@@ -779,7 +808,8 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
         self.assertEqual(
             decisions,
             ["request", "request", None, "request", None, None,
-             "request", "request", None],
+             "request", "request", None,
+             "request", "request", "request", None],
         )
 
     def test_confirm_deletions_policy_decisions(self) -> None:

@@ -268,6 +268,11 @@ Usage rules:
   `PROTECTED_DIRECTORIES` constant at the top of
   `permissions/protected-paths.ts`, and the generic secret-file rules live
   in `permissions/lib/path-matchers.js`.
+- Shell commands referencing secret paths (for example `cat
+  ~/.pi/agent/auth.json`) require the same per-call approval, so the bash
+  tool cannot read what the file tools would gate.
+- `~/.pi` itself is a protected directory: Pi's authentication store, MCP
+  override, and settings cannot be modified by file tools without approval.
 
 Implementation:
 

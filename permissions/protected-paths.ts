@@ -8,6 +8,7 @@ import {
 
 import {
   findProtectedDirectory,
+  findSecretPathReferences,
   isSecretFile,
 } from "./lib/path-matchers.js";
 
@@ -16,6 +17,9 @@ import {
 // Forks: extend this list to match your own contract's protected paths
 // (archives, model weights, datasets, backups, ...).
 const PROTECTED_DIRECTORIES = [
+  // Pi's own agent state: auth.json, mcp.json, settings.json, permissions.
+  // An unapproved write here could redirect what Pi loads or trusts.
+  "~/.pi",
   "~/.ssh",
   "~/.config",
   "~/.local/share",
@@ -48,7 +52,8 @@ export default function permissions(api: PermissionsAPI) {
     name: "protected path and secret access approval",
     description:
       "Require per-call approval for file-tool writes into protected " +
-      "directories and reads of secret-shaped files.",
+      "directories, reads of secret-shaped files, and shell commands " +
+      "referencing secret paths.",
 
     handler(input) {
       return matchTool(input.tool, {
@@ -71,6 +76,22 @@ export default function permissions(api: PermissionsAPI) {
               "call.",
             approveLabel: "Approve read",
             rejectLabel: "Reject read",
+          });
+        },
+        bash(tool) {
+          const findings = findSecretPathReferences(tool.command, HOME);
+          if (findings.length === 0) {
+            return undefined;
+          }
+          const rules = [...new Set(findings.map((f) => f.rule))].join(", ");
+          return request({
+            guidance:
+              `This command references secret material (${rules}). Its ` +
+              "output will enter model context and be transmitted to the " +
+              "model provider. Approval applies only to this tool call.",
+            approveLabel: "Approve command",
+            editLabel: "Edit command",
+            rejectLabel: "Reject command",
           });
         },
         grep(tool) {

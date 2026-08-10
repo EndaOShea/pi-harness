@@ -11,7 +11,12 @@ release tag automatically; tagging remains an explicit maintainer action.
 - added a disabled, optional Playwright MCP application template pinned to
   `@playwright/mcp@0.0.79`; it uses headless isolated Firefox by default and
   exposes an explicit tool allowlist that omits file transfer and arbitrary
-  JavaScript execution.
+  JavaScript execution;
+- hardened credential protection: `~/.pi` (Pi's authentication store, MCP
+  override, and settings) is now a protected directory for file-tool writes,
+  and shell commands referencing secret paths (`cat ~/.pi/agent/auth.json`,
+  dotenv files, private keys) require the same per-call approval as
+  file-tool reads.
 
 ## 0.1.0-rc.6 - 2026-08-08
 

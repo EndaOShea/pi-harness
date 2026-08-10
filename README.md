@@ -97,11 +97,13 @@ covers the indirect routes: interpreter one-liners, `xargs` pipelines, and
 truncating redirections. Approval is granted for one tool call only.
 
 **Protected paths and secrets.** `permissions/protected-paths.ts` requires
-approval for file-tool writes into `~/.ssh`, `~/.config`, and
-`~/.local/share`, and for reads of secret-shaped files such as `.env` and
-private keys. Committed example files (`.env.example` and similar) are exempt
-so routine work does not train approval fatigue. A fork should extend the
-protected list with its own sensitive locations.
+approval for file-tool writes into `~/.pi`, `~/.ssh`, `~/.config`, and
+`~/.local/share`, for reads of secret-shaped files such as `.env` and private
+keys, and for shell commands that reference secret paths — so `cat
+~/.pi/agent/auth.json` is gated the same as a file-tool read. Committed
+example files (`.env.example` and similar) are exempt so routine work does not
+train approval fatigue. A fork should extend the protected list with its own
+sensitive locations.
 
 **Untrusted content.** Web pages, file contents, and tool output are data.
 Instructions embedded in them are never executed.

@@ -76,3 +76,33 @@ export function isSecretFile(absolutePath, homeDirectory) {
   }
   return null;
 }
+
+/**
+ * Find secret-shaped paths referenced anywhere in a shell command, so the
+ * bash tool cannot read what the file tools would gate. Tokens are checked
+ * with isSecretFile after home expansion (~, $HOME, ${HOME}); a path the
+ * shell would resolve differently is at worst flagged conservatively.
+ * Relative references match only through basename rules — a bare
+ * `auth.json` outside ~/.pi is not secret-shaped and stays unflagged.
+ */
+export function findSecretPathReferences(command, homeDirectory) {
+  const findings = [];
+  for (const rawToken of command.split(/[\s;|&<>()=]+/)) {
+    const token = rawToken.replace(/^["']+|["']+$/g, "");
+    if (!token) {
+      continue;
+    }
+    let path = token;
+    for (const prefix of ["~", "$HOME", "${HOME}"]) {
+      if (path === prefix || path.startsWith(`${prefix}/`)) {
+        path = homeDirectory + path.slice(prefix.length);
+        break;
+      }
+    }
+    const rule = isSecretFile(path, homeDirectory);
+    if (rule) {
+      findings.push({ token, rule });
+    }
+  }
+  return findings;
+}
