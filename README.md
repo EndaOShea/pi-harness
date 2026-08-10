@@ -90,7 +90,9 @@ the frontier model and records the model it was running as
 Both modes write `~/.pi/agent/settings.json` and stay active, including
 across sessions, until `/pair off` restores every setting the pairing
 changed to the values recorded when it was turned on; in orchestrate mode
-this also switches the session's model back to the worker model. A
+this also switches the session's model back to the worker model and
+restores the session's prior thinking level. Orchestrate mode itself
+raises the session's thinking to high once the model switch succeeds. A
 pairing left active by an earlier session surfaces as a warning at the
 start of the next one. `/pair status` reports the active mode, the models
 in play, the configured or resolved default frontier model, and any such
@@ -99,15 +101,16 @@ frontier model, or with no argument reports the current setting and what
 it would resolve to right now.
 
 When `[model]` is omitted, the frontier model comes from the stored
-default, or otherwise the newest authenticated OpenAI reasoning model.
+default, else the pinned `openai-codex/gpt-5.6-sol` when it's present
+and authenticated, else the newest authenticated OpenAI reasoning model.
 Model arguments match fuzzily, so `openai/gpt-5.5`, `openai:gpt-5.5`, and
 `OpenAI/GPT-5-5` are equivalent; a bare id that exists under more than
 one provider needs a provider prefix to disambiguate. `/pair review`
 warns, but proceeds, if the session model is not from a local provider.
 `/pair orchestrate` rolls back its settings write if the model switch
-fails, so a pairing is never half-applied. Settings writes are unlocked,
-so avoid running `/pair` from two sessions at once, or an update can be
-lost.
+fails, leaving thinking untouched, so a pairing is never half-applied.
+Settings writes are unlocked, so avoid running `/pair` from two sessions
+at once, or an update can be lost.
 
 ## Safety model
 

@@ -36,15 +36,19 @@ release tag automatically; tagging remains an explicit maintainer action.
   [model]` keeps the session on its local model and has the pi-subagents
   watchdog review each turn's changes with the frontier model at thinking
   high, while `/pair orchestrate [model]` switches the main session to the
-  frontier model and sets `subagents.defaultModel` to the local model so
-  `/run` subagents keep executing locally; `/pair off` restores every
-  setting the pairing changed from recorded prior values, `/pair status`
-  reports current state, and `/pair default [model]` sets or reports the
-  default frontier model, which otherwise falls back to the newest
-  authenticated OpenAI reasoning model (or the newest authenticated
-  OpenAI model, if none is reasoning-capable); both modes persist in
-  `~/.pi/agent/settings.json` until turned off, and a session-start warning
-  surfaces a pairing left active by an earlier session.
+  frontier model, raises its thinking to high, and sets
+  `subagents.defaultModel` to the local model so `/run` subagents keep
+  executing locally; `/pair off` restores every setting the pairing
+  changed from recorded prior values, including the session's prior
+  thinking level in orchestrate mode, `/pair status` reports current
+  state, and `/pair default [model]` sets or reports the default frontier
+  model, which otherwise falls back to the pinned
+  `openai-codex/gpt-5.6-sol` when it's present and authenticated, else
+  the newest authenticated OpenAI reasoning model (or the newest
+  authenticated OpenAI model, if none is reasoning-capable); both modes
+  persist in `~/.pi/agent/settings.json` until turned off, and a
+  session-start warning surfaces a pairing left active by an earlier
+  session.
 
 ## 0.1.0-rc.6 - 2026-08-08
 
