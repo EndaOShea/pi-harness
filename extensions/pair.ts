@@ -40,6 +40,12 @@ export interface PairMarker {
   mode: PairMode;
   frontierModel: string;
   workerModel?: string;
+  /** Session thinking level from just before orchestrate mode raised it to
+   *  "high", so /pair off can restore it. Absent for review-mode markers
+   *  (which never touch session thinking) and for any marker written by a
+   *  version of this extension that predates this field — both cases
+   *  simply mean "nothing to restore". */
+  priorThinking?: string;
   /** Exact prior values of every settings key the pairing changed.
    *  A key that did not exist is recorded as { existed: false }. */
   priors: Record<string, { existed: boolean; value?: unknown }>;
@@ -174,7 +180,12 @@ export function readPairMarker(
  */
 export function planPairApply(
   settings: Record<string, unknown>,
-  input: { mode: PairMode; frontierModel: string; workerModel?: string },
+  input: {
+    mode: PairMode;
+    frontierModel: string;
+    workerModel?: string;
+    priorThinking?: string;
+  },
 ): { settings: Record<string, unknown> } | { error: string } {
   if (readPairMarker(settings) !== undefined) {
     return { error: "a pairing is already active; run /pair off first" };
@@ -213,6 +224,7 @@ export function planPairApply(
     mode: input.mode,
     frontierModel: input.frontierModel,
     ...(input.workerModel !== undefined ? { workerModel: input.workerModel } : {}),
+    ...(input.priorThinking !== undefined ? { priorThinking: input.priorThinking } : {}),
     priors,
   };
   const markerResult = setPath(next, `pair.${PAIR_MARKER_KEY}`, marker);
@@ -377,12 +389,27 @@ export function resolveModelQuery(
 
 const DEFAULT_FRONTIER_PROVIDERS = ["openai", "openai-codex"];
 
-/** Fallback: newest authenticated OpenAI-family model. Providers considered:
- *  "openai", "openai-codex". Prefers reasoning models; among equals, later
- *  registry position wins (registries append newer models). */
+/** The built-in default frontier model, preferred over the dynamic pick
+ *  below whenever it is present among the candidates and authenticated.
+ *  Exported so tests can assert against it and a future change has one
+ *  place to edit. */
+export const PREFERRED_DEFAULT_FRONTIER = "openai-codex/gpt-5.6-sol";
+
+/** Fallback: prefers PREFERRED_DEFAULT_FRONTIER when it is present among the
+ *  candidates and authenticated. Otherwise, falls back to the newest
+ *  authenticated OpenAI-family model. Providers considered for the fallback
+ *  path: "openai", "openai-codex". Prefers reasoning models; among equals,
+ *  later registry position wins (registries append newer models). */
 export function pickDefaultFrontier(
   candidates: CandidateModel[],
 ): { model: CandidateModel } | { error: string } {
+  const preferred = candidates.find(
+    (c) => `${c.provider}/${c.id}` === PREFERRED_DEFAULT_FRONTIER && c.authenticated === true,
+  );
+  if (preferred) {
+    return { model: preferred };
+  }
+
   const eligible = candidates.filter(
     (c) => c.authenticated === true && DEFAULT_FRONTIER_PROVIDERS.includes(c.provider),
   );
@@ -600,6 +627,8 @@ interface PairModel {
   reasoning: boolean;
 }
 
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 interface PairModelRegistry {
   getAll(): PairModel[];
   find(provider: string, modelId: string): PairModel | undefined;
@@ -611,6 +640,8 @@ interface PairCommandContext {
   modelRegistry: PairModelRegistry;
   setModel(model: PairModel): Promise<boolean>;
   getActiveTools(): string[];
+  getThinkingLevel(): ThinkingLevel;
+  setThinkingLevel(level: ThinkingLevel): void;
 }
 
 interface PairExtensionApi {
@@ -791,10 +822,15 @@ export default function pair(pi: PairExtensionApi): void {
 
     // Captured before any write, so a failed model switch can be undone.
     const prePlanSettings = structuredClone(loaded.settings);
+    // Captured now (nothing between here and the switch below touches
+    // session thinking) so the marker can record it in the same write as
+    // everything else, ahead of the switch this plan is about to attempt.
+    const priorThinking = ctx.getThinkingLevel();
     const planned = planPairApply(loaded.settings, {
       mode: "orchestrate",
       frontierModel: frontierRef,
       workerModel: workerRef,
+      priorThinking,
     });
     if ("error" in planned) {
       send(planned.error);
@@ -817,10 +853,15 @@ export default function pair(pi: PairExtensionApi): void {
       return;
     }
 
+    // Thinking is only ever raised once the switch is confirmed to have
+    // succeeded — if the switch had failed above, this line never runs.
+    ctx.setThinkingLevel("high");
+
     send(
       [
         `Pairing active: orchestrate mode with ${frontierRef} orchestrating.`,
         `Subagents launched with /run now use ${workerRef}.`,
+        "Session thinking raised to high.",
         "End the pairing with /pair off, which also restores the session model.",
       ].join("\n"),
     );
@@ -881,6 +922,21 @@ export default function pair(pi: PairExtensionApi): void {
           ? `Session model restored to ${planned.marker.workerModel}.`
           : `Could not restore the session model to ${planned.marker.workerModel} (${switchResult.reason}) — switch back with /model.`,
       );
+    }
+
+    // Thinking restore is independent of the model-switch outcome above and
+    // must never block completion of /pair off: a marker from before this
+    // field existed simply has nothing to restore, and a failure here is
+    // reported the same way a failed model restore is, above.
+    if (planned.marker.priorThinking !== undefined) {
+      try {
+        ctx.setThinkingLevel(planned.marker.priorThinking as ThinkingLevel);
+        lines.push(`Session thinking restored to ${planned.marker.priorThinking}.`);
+      } catch (error) {
+        lines.push(
+          `Could not restore session thinking to ${planned.marker.priorThinking} (${errorMessage(error)}) — adjust it manually if needed.`,
+        );
+      }
     }
 
     send(lines.join("\n"));

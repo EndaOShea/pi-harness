@@ -870,6 +870,18 @@ assert(planPairOff({}).error, 'off without marker refused');
 // non-object in the path is an error, not a clobber
 r = planPairApply({ subagents: 5 }, { mode: 'review', frontierModel: 'openai/gpt-5.5' });
 assert(r.error, 'non-object path segment is an error');
+// priorThinking threads through planPairApply's input into the marker, and
+// planPairOff surfaces it back out so /pair off can restore it
+r = planPairApply({}, { mode: 'orchestrate', frontierModel: 'openai/gpt-5.5', workerModel: 'ollama/qwen3', priorThinking: 'medium' });
+assert(!r.error, 'orchestrate apply with priorThinking succeeds: ' + r.error);
+assert(readPairMarker(r.settings).priorThinking === 'medium', 'priorThinking recorded in marker');
+off = planPairOff(r.settings);
+assert(!off.error, 'off succeeds with priorThinking marker');
+assert(off.marker.priorThinking === 'medium', 'priorThinking surfaced by planPairOff');
+// a marker without priorThinking (e.g. written by a previous version, or
+// review mode which never sets it) means "nothing to restore"
+r = planPairApply({}, { mode: 'review', frontierModel: 'openai/gpt-5.5' });
+assert(readPairMarker(r.settings).priorThinking === undefined, 'no priorThinking when not provided');
 console.log('ok');
 """
         result = subprocess.run(
@@ -886,7 +898,7 @@ console.log('ok');
 
     def test_pair_extension_model_resolution(self) -> None:
         script = """
-import { resolveModelQuery, pickDefaultFrontier, isLocalModel } from './extensions/pair.ts';
+import { resolveModelQuery, pickDefaultFrontier, isLocalModel, PREFERRED_DEFAULT_FRONTIER } from './extensions/pair.ts';
 const assert = (cond, msg) => {
   if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
 };
@@ -918,6 +930,30 @@ r = pickDefaultFrontier(cands.filter(c => c.provider !== 'openai'));
 assert(r.error, 'no authenticated openai model errors');
 assert(isLocalModel('ollama') && isLocalModel('lmstudio') && isLocalModel('llamacpp'), 'local providers');
 assert(!isLocalModel('openai') && !isLocalModel('anthropic'), 'frontier providers not local');
+assert(PREFERRED_DEFAULT_FRONTIER === 'openai-codex/gpt-5.6-sol', 'preferred default frontier constant');
+// pinned default wins even when a later-ordered authenticated reasoning
+// candidate exists (this is the regression the pin exists to prevent).
+const pinnedCands = [
+  { provider: 'openai-codex', id: 'gpt-5.6-sol', reasoning: true, authenticated: true },
+  { provider: 'openai-codex', id: 'gpt-5.6-terra', reasoning: true, authenticated: true },
+];
+r = pickDefaultFrontier(pinnedCands);
+assert(r.model && r.model.provider === 'openai-codex' && r.model.id === 'gpt-5.6-sol', 'pinned default preferred over later-ordered candidate, got ' + JSON.stringify(r));
+// pinned model present but unauthenticated: dynamic fallback applies instead
+const unauthPinnedCands = [
+  { provider: 'openai-codex', id: 'gpt-5.6-sol', reasoning: true, authenticated: false },
+  { provider: 'openai-codex', id: 'gpt-5.6-terra', reasoning: true, authenticated: true },
+];
+r = pickDefaultFrontier(unauthPinnedCands);
+assert(r.model && r.model.id === 'gpt-5.6-terra', 'unauthenticated pinned model falls back to dynamic pick, got ' + JSON.stringify(r));
+// pinned model absent entirely: existing behavior unchanged (last
+// authenticated reasoning candidate wins)
+const noPinnedCands = [
+  { provider: 'openai-codex', id: 'gpt-5.6-terra', reasoning: true, authenticated: true },
+  { provider: 'openai-codex', id: 'gpt-4o', reasoning: false, authenticated: true },
+];
+r = pickDefaultFrontier(noPinnedCands);
+assert(r.model && r.model.id === 'gpt-5.6-terra', 'absent pinned model: existing last-authenticated-reasoning behavior unchanged, got ' + JSON.stringify(r));
 console.log('ok');
 """
         result = subprocess.run(
