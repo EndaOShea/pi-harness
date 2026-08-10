@@ -332,3 +332,29 @@ Implementation:
 - llama.cpp: native Pi support; no harness configuration. Configure with
   `/login llama.cpp`, manage models with `/llama`, or set
   `LLAMA_BASE_URL` / `LLAMA_API_KEY` in the environment.
+
+## Frontier Pairing
+
+Purpose:
+
+- pair a local-model session with a frontier model, either as an
+  independent reviewer or as the orchestrator of local-model subagents.
+
+Usage rules:
+
+- Use review mode when the local model is doing sustained implementation
+  work and needs an independent check.
+- Use orchestrate mode when the task needs frontier-grade planning but
+  execution is cheap and can run locally.
+- The operator chooses the mode and runs `/pair`; the agent may suggest
+  pairing but never runs `/pair` itself.
+- Turn a pairing off with `/pair off` before starting a different one;
+  `/pair status` reports a pairing left active by an earlier session.
+
+Implementation:
+
+- `extensions/pair.ts`, installed by the harness alongside
+  `extensions/local-models.ts`. Adds the `/pair` command
+  (`/pair review`, `/pair orchestrate`, `/pair off`, `/pair status`,
+  `/pair default`) and writes `~/.pi/agent/settings.json` through
+  pi-subagents' watchdog and default-model settings.

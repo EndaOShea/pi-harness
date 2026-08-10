@@ -42,6 +42,7 @@ package reference is an exact version or an immutable commit.
 | Browser automation | Rendered-page inspection and interaction, optional and disabled by default | `mcp/playwright.optional.example.json` |
 | Parallel work | Subagent dispatch for independent tasks | `pi-subagents` |
 | Local models | Session-start discovery of Ollama and LM Studio servers | `extensions/local-models.ts` |
+| Frontier pairing | `/pair` runs a frontier model as reviewer (watchdog) or orchestrator over a local-model session | `extensions/pair.ts` |
 | Usage accounting | Token and cost reporting | `@narumitw/pi-usage` |
 | Approval hooks | Per-call confirmation for deletion and protected-path operations | `permissions/` |
 
@@ -74,6 +75,39 @@ payload is skipped silently. llama.cpp is supported natively by Pi through
 `/login llama.cpp` and `/llama` rather than by this extension. Endpoints
 beyond the localhost defaults come only from environment variables, never from
 files in this repository.
+
+### Frontier pairing
+
+`/pair` brings a frontier model into a local-model session without moving
+the whole session over. `/pair review [model]` keeps the main session on
+the local model while the pi-subagents watchdog reviews each turn's
+changes with the frontier model at high thinking effort; it takes effect
+from the next turn, since pi-subagents re-reads settings at every turn
+start. `/pair orchestrate [model]` switches the main session itself to
+the frontier model and records the model it was running as
+`subagents.defaultModel`, so `/run` subagents keep executing on it.
+
+Both modes write `~/.pi/agent/settings.json` and stay active, including
+across sessions, until `/pair off` restores every setting the pairing
+changed to the values recorded when it was turned on; in orchestrate mode
+this also switches the session's model back to the worker model. A
+pairing left active by an earlier session surfaces as a warning at the
+start of the next one. `/pair status` reports the active mode, the models
+in play, the configured or resolved default frontier model, and any such
+leftover pairing. `/pair default [model]` stores a model as the default
+frontier model, or with no argument reports the current setting and what
+it would resolve to right now.
+
+When `[model]` is omitted, the frontier model comes from the stored
+default, or otherwise the newest authenticated OpenAI reasoning model.
+Model arguments match fuzzily, so `openai/gpt-5.5`, `openai:gpt-5.5`, and
+`OpenAI/GPT-5-5` are equivalent; a bare id that exists under more than
+one provider needs a provider prefix to disambiguate. `/pair review`
+warns, but proceeds, if the session model is not from a local provider.
+`/pair orchestrate` rolls back its settings write if the model switch
+fails, so a pairing is never half-applied. Settings writes are unlocked,
+so avoid running `/pair` from two sessions at once, or an update can be
+lost.
 
 ## Safety model
 
