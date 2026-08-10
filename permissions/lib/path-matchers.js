@@ -77,6 +77,66 @@ export function isSecretFile(absolutePath, homeDirectory) {
   return null;
 }
 
+function isUnder(absolutePath, prefix) {
+  const clean = prefix.replace(/\/+$/, "");
+  return absolutePath === clean || absolutePath.startsWith(`${clean}/`);
+}
+
+/**
+ * True when a path is neither inside the workspace root nor inside any
+ * exempt prefix (OS scratch space, pseudo-filesystems). The policy module
+ * supplies both lists so this stays generic across forks.
+ */
+export function isOutsideWorkspace(absolutePath, workspaceRoot, exemptPrefixes) {
+  if (isUnder(absolutePath, workspaceRoot)) {
+    return false;
+  }
+  return !exemptPrefixes.some((prefix) => isUnder(absolutePath, prefix));
+}
+
+const HOME_PREFIXES = ["~", "$HOME", "${HOME}"];
+
+function expandCommandToken(rawToken, homeDirectory) {
+  const token = rawToken.replace(/^["']+|["']+$/g, "");
+  if (!token) {
+    return "";
+  }
+  for (const prefix of HOME_PREFIXES) {
+    if (token === prefix || token.startsWith(`${prefix}/`)) {
+      return homeDirectory + token.slice(prefix.length);
+    }
+  }
+  return token;
+}
+
+/**
+ * Find shell-command tokens that reference paths outside the workspace
+ * root: absolute paths (after home expansion) not under the root or an
+ * exempt prefix, and relative paths with a `..` segment, which cannot be
+ * proven to stay inside. Purely lexical — a path built dynamically by the
+ * command is not visible here; this narrows the escape surface, it does
+ * not seal it.
+ */
+export function findWorkspaceEscapes(
+  command, workspaceRoot, homeDirectory, exemptPrefixes,
+) {
+  const findings = [];
+  for (const rawToken of command.split(/[\s;|&<>()=]+/)) {
+    const token = expandCommandToken(rawToken, homeDirectory);
+    if (!token) {
+      continue;
+    }
+    if (token.startsWith("/")) {
+      if (isOutsideWorkspace(token, workspaceRoot, exemptPrefixes)) {
+        findings.push({ token: rawToken, path: token });
+      }
+    } else if (token.includes("/") && token.split("/").includes("..")) {
+      findings.push({ token: rawToken, path: token });
+    }
+  }
+  return findings;
+}
+
 /**
  * Find secret-shaped paths referenced anywhere in a shell command, so the
  * bash tool cannot read what the file tools would gate. Tokens are checked
@@ -88,20 +148,13 @@ export function isSecretFile(absolutePath, homeDirectory) {
 export function findSecretPathReferences(command, homeDirectory) {
   const findings = [];
   for (const rawToken of command.split(/[\s;|&<>()=]+/)) {
-    const token = rawToken.replace(/^["']+|["']+$/g, "");
-    if (!token) {
+    const path = expandCommandToken(rawToken, homeDirectory);
+    if (!path) {
       continue;
-    }
-    let path = token;
-    for (const prefix of ["~", "$HOME", "${HOME}"]) {
-      if (path === prefix || path.startsWith(`${prefix}/`)) {
-        path = homeDirectory + path.slice(prefix.length);
-        break;
-      }
     }
     const rule = isSecretFile(path, homeDirectory);
     if (rule) {
-      findings.push({ token, rule });
+      findings.push({ token: path, rule });
     }
   }
   return findings;

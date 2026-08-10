@@ -273,6 +273,11 @@ Usage rules:
   tool cannot read what the file tools would gate.
 - `~/.pi` itself is a protected directory: Pi's authentication store, MCP
   override, and settings cannot be modified by file tools without approval.
+- File-tool writes and shell path references outside the session's working
+  tree require per-call approval (`permissions/workspace-scope.ts`); the
+  workspace root plus OS temp directories and read-only pseudo-filesystems
+  are exempt. This is approval gating at the tool boundary, not an OS
+  sandbox — an approved program can still act outside the tree.
 
 Implementation:
 
@@ -280,7 +285,8 @@ Implementation:
 - Direct-command policy in `permissions/confirm-deletions.ts`, indirect
   shell/interpreter policy in `permissions/destructive-patterns.js`, and
   file-tool protected-path/secret-read policy in
-  `permissions/protected-paths.ts`, with shared matchers kept below
+  `permissions/protected-paths.ts`, workspace-boundary policy in
+  `permissions/workspace-scope.ts`, with shared matchers kept below
   `permissions/lib/` so the loader does not treat support code as a
   standalone policy module.
 

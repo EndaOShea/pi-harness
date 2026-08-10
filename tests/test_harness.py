@@ -71,8 +71,8 @@ for (const c of cases) {
   for (const hook of hooks) {
     decision = await hook.handler({
       tool: c.tool,
-      cwd: process.cwd(),
-      permissionRoot: process.cwd(),
+      cwd: c.cwd ?? process.cwd(),
+      permissionRoot: c.permissionRoot ?? process.cwd(),
     });
     if (decision) break;
   }
@@ -631,9 +631,13 @@ import {
   expandHome,
   findProtectedDirectory,
   findSecretPathReferences,
+  findWorkspaceEscapes,
+  isOutsideWorkspace,
   isSecretFile,
 } from './permissions/lib/path-matchers.js';
 const HOME = '/home/tester';
+const ROOT_WS = '/home/tester/project';
+const EXEMPT = ['/tmp', '/var/tmp', '/dev', '/proc', '/sys'];
 const DIRS = ['~/Archives', '~/.pi', '~/.ssh', '~/.config', '~/.local/share', '~/Models'];
 const cases = JSON.parse(process.argv[1]);
 for (const c of cases) {
@@ -643,7 +647,11 @@ for (const c of cases) {
       ? isSecretFile(c.path, HOME)
       : c.fn === 'bashSecrets'
         ? (findSecretPathReferences(c.path, HOME).length > 0 ? 'hit' : null)
-        : expandHome(c.path, HOME);
+        : c.fn === 'outsideWs'
+          ? (isOutsideWorkspace(c.path, ROOT_WS, EXEMPT) ? 'hit' : null)
+          : c.fn === 'wsEscapes'
+            ? (findWorkspaceEscapes(c.path, ROOT_WS, HOME, EXEMPT).length > 0 ? 'hit' : null)
+            : expandHome(c.path, HOME);
   const matched = actual !== null;
   if (c.expected !== undefined && actual !== c.expected) {
     console.error(JSON.stringify({ ...c, actual }));
@@ -703,6 +711,27 @@ for (const c of cases) {
             {"fn": "bashSecrets", "path": "ls -la src/", "matches": False},
             {"fn": "bashSecrets", "path": "cat ~/.ssh/id_ed25519.pub", "matches": False},
             {"fn": "bashSecrets", "path": "git log --oneline", "matches": False},
+            {"fn": "outsideWs", "path": "/home/tester/project/src/a.py", "matches": False},
+            {"fn": "outsideWs", "path": "/home/tester/project", "matches": False},
+            {"fn": "outsideWs", "path": "/home/tester/project-old/a.py", "matches": True},
+            {"fn": "outsideWs", "path": "/home/tester/other/a.py", "matches": True},
+            {"fn": "outsideWs", "path": "/tmp/scratch/x.json", "matches": False},
+            {"fn": "outsideWs", "path": "/var/tmp/x", "matches": False},
+            {"fn": "outsideWs", "path": "/dev/null", "matches": False},
+            {"fn": "outsideWs", "path": "/etc/hosts", "matches": True},
+            {"fn": "wsEscapes", "path": "cat /etc/passwd", "matches": True},
+            {"fn": "wsEscapes", "path": "ls src/", "matches": False},
+            {"fn": "wsEscapes", "path": "git log HEAD~2..HEAD", "matches": False},
+            {"fn": "wsEscapes", "path": "cat ../outside.txt", "matches": True},
+            {"fn": "wsEscapes", "path": "diff a.txt ../../sibling/b.txt", "matches": True},
+            {"fn": "wsEscapes", "path": "python3 gen.py --out=/tmp/x.json", "matches": False},
+            {"fn": "wsEscapes", "path": "cat ~/.bashrc", "matches": True},
+            {"fn": "wsEscapes", "path": "cp a.txt /home/tester/project/docs/", "matches": False},
+            {"fn": "wsEscapes", "path": "echo hi > /dev/null", "matches": False},
+            {"fn": "wsEscapes", "path": "tar -xf rel.tgz -C /opt", "matches": True},
+            {"fn": "wsEscapes", "path": "df -h /", "matches": True},
+            {"fn": "wsEscapes", "path": "curl https://example.com/api/x", "matches": False},
+            {"fn": "wsEscapes", "path": "grep -r pattern .", "matches": False},
         ]
         result = subprocess.run(
             ["node", "--input-type=module", "-e", script, json.dumps(cases)],
@@ -812,6 +841,39 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
              "request", "request", "request", None],
         )
 
+    def test_workspace_scope_policy_decisions(self) -> None:
+        root = "/home/tester/project"
+        cases = [
+            {"permissionRoot": root,
+             "tool": {"toolName": "write", "path": "src/main.py",
+                      "absolutePath": f"{root}/src/main.py", "input": {}}},
+            {"permissionRoot": root,
+             "tool": {"toolName": "write", "path": "../elsewhere/x.py",
+                      "absolutePath": "/home/tester/elsewhere/x.py", "input": {}}},
+            {"permissionRoot": root,
+             "tool": {"toolName": "edit", "path": "/etc/hosts",
+                      "absolutePath": "/etc/hosts", "input": {}}},
+            {"permissionRoot": root,
+             "tool": {"toolName": "write", "path": "/tmp/scratch/x.json",
+                      "absolutePath": "/tmp/scratch/x.json", "input": {}}},
+            {"permissionRoot": root,
+             "tool": {"toolName": "read", "path": "/etc/hosts",
+                      "absolutePath": "/etc/hosts", "input": {}}},
+            {"permissionRoot": root,
+             "tool": {"toolName": "bash",
+                      "command": "cat /etc/passwd", "input": {}}},
+            {"permissionRoot": root,
+             "tool": {"toolName": "bash",
+                      "command": "python3 -m unittest", "input": {}}},
+        ]
+        decisions = run_policy_cases(
+            self, "permissions/workspace-scope.ts", cases
+        )
+        self.assertEqual(
+            decisions,
+            [None, "request", "request", None, None, "request", None],
+        )
+
     def test_confirm_deletions_policy_decisions(self) -> None:
         cases = [
             {"tool": {"toolName": "bash", "command": "rm -rf build", "input": {}}},
@@ -830,6 +892,7 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
         for module in (
             ROOT / "permissions" / "confirm-deletions.ts",
             ROOT / "permissions" / "protected-paths.ts",
+            ROOT / "permissions" / "workspace-scope.ts",
             ROOT / "extensions" / "local-models.ts",
         ):
             with self.subTest(module=module.name):
@@ -931,7 +994,10 @@ class InstallerBehaviorTests(unittest.TestCase):
         for permission_name in (
             "confirm-deletions.ts",
             "destructive-patterns.js",
+            "protected-paths.ts",
+            "workspace-scope.ts",
             "lib/destructive-patterns.js",
+            "lib/path-matchers.js",
         ):
             installed_permission = agent_dir / "permissions" / permission_name
             source_permission = ROOT / "permissions" / permission_name

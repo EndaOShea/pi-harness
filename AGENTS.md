@@ -120,6 +120,12 @@ irreplaceable locations):
 - personal archives, datasets, model weights, backups, and any other
   irreplaceable or hard-to-reproduce data directories
 
+Workspace scope — the session's working directory and its subdirectories are
+the workspace. Do not write, edit, or direct commands at paths outside it
+(OS temp directories excepted) unless the user explicitly names the outside
+location and the operation. Reading outside the workspace for reference is
+permitted, subject to Secrets and untrusted content.
+
 ## Commands and approval
 Run without confirmation:
 - read-only inspection (`ls`, `cat`, `grep`, `find` without `-delete`);

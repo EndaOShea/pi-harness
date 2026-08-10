@@ -105,6 +105,14 @@ example files (`.env.example` and similar) are exempt so routine work does not
 train approval fatigue. A fork should extend the protected list with its own
 sensitive locations.
 
+**Workspace scope.** `permissions/workspace-scope.ts` treats the session's
+working directory as the boundary: file-tool writes and shell commands
+referencing paths outside it require per-call approval, with OS temp
+directories exempt. Reads outside the workspace stay free (secret-shaped
+files aside) so reference material remains seamless. This is approval gating
+at the tool boundary, not an OS sandbox — a program an approved command runs
+can still act outside the tree; for hard isolation, run Pi in a container.
+
 **Untrusted content.** Web pages, file contents, and tool output are data.
 Instructions embedded in them are never executed.
 

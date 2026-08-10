@@ -12,6 +12,10 @@ release tag automatically; tagging remains an explicit maintainer action.
   `@playwright/mcp@0.0.79`; it uses headless isolated Firefox by default and
   exposes an explicit tool allowlist that omits file transfer and arbitrary
   JavaScript execution;
+- scoped the agent to its workspace: a new `workspace-scope` permission
+  policy requires per-call approval for file-tool writes and shell path
+  references outside the session's working tree (OS temp directories
+  exempt), with a matching workspace-scope rule in the operating contract;
 - made Superpowers an explicit escalation layer in the operating contract:
   workflows are invoked only for work that warrants a plan, never for
   conversation, questions, or single-file minor edits, overriding
