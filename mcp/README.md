@@ -103,6 +103,8 @@ Do not commit the environment variable's value.
 The optional Playwright application provides rendered-page inspection and
 interaction through the official Microsoft MCP server. It complements
 `pi-web-access`; it does not replace web search or static content extraction.
+Prefer the static tools when they suffice, but an explicit user request for
+the browser overrides that preference.
 
 The reviewed template:
 

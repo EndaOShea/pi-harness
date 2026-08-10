@@ -209,7 +209,9 @@ Purpose:
 Usage rules:
 
 - Prefer `web_search`, `fetch_content`, and `source_check` for research and
-  static content. Do not launch a browser when those tools are sufficient.
+  static content. Do not launch a browser when those tools are sufficient —
+  unless the user explicitly requests the browser, which overrides this
+  preference.
 - Browser automation is optional and disabled by default. Enabling it and
   downloading a browser binary are separate, explicit operator actions.
 - Use an isolated, headless browser context. Do not attach a personal browser
