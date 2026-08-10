@@ -10,6 +10,7 @@ import {
   findWorkspaceEscapes,
   isOutsideWorkspace,
 } from "./lib/path-matchers.js";
+import { resolvePhysicalPath } from "./lib/resolve-path.js";
 
 // The session's working tree is the workspace boundary: file-tool writes
 // and shell path references outside it require per-call approval. Reads
@@ -33,8 +34,10 @@ export default function permissions(api: PermissionsAPI) {
         return undefined;
       }
 
-      const writeDecision = (absolutePath: string) => {
-        if (!isOutsideWorkspace(absolutePath, root, EXEMPT_PREFIXES)) {
+      const resolvedRoot = resolvePhysicalPath(root);
+      const writeDecision = (lexicalPath: string) => {
+        const absolutePath = resolvePhysicalPath(lexicalPath);
+        if (!isOutsideWorkspace(absolutePath, resolvedRoot, EXEMPT_PREFIXES)) {
           return undefined;
         }
         return request({

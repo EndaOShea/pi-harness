@@ -12,6 +12,12 @@ release tag automatically; tagging remains an explicit maintainer action.
   `@playwright/mcp@0.0.79`; it uses headless isolated Firefox by default and
   exposes an explicit tool allowlist that omits file transfer and arbitrary
   JavaScript execution;
+- gated outbound transmission: uploads, raw network transfers, rsync to
+  remote targets, and `git push` require per-call approval
+  (`confirm-egress.ts`), with localhost destinations exempt;
+- resolved file-tool paths through symlinks before permission matching, so
+  a symlink inside the workspace cannot launder access to protected
+  directories, secret files, or locations outside the workspace;
 - scoped the agent to its workspace: a new `workspace-scope` permission
   policy requires per-call approval for file-tool writes and shell path
   references outside the session's working tree (OS temp directories

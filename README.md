@@ -109,9 +109,18 @@ sensitive locations.
 working directory as the boundary: file-tool writes and shell commands
 referencing paths outside it require per-call approval, with OS temp
 directories exempt. Reads outside the workspace stay free (secret-shaped
-files aside) so reference material remains seamless. This is approval gating
+files aside) so reference material remains seamless. Paths are resolved through symlinks before
+matching, so a link inside the workspace cannot launder access to a gated
+location. This is approval gating
 at the tool boundary, not an OS sandbox — a program an approved command runs
 can still act outside the tree; for hard isolation, run Pi in a container.
+
+**Outbound transmission.** `permissions/confirm-egress.ts` gates the
+exfiltration counterpart of secret reads: commands that send data off the
+machine — curl/wget with data-carrying flags or mutating HTTP methods,
+`scp`/`sftp`/`nc`/`socat`, rsync to a remote target, and `git push` — require
+per-call approval naming the destination. Requests to localhost stay free so
+development servers and the local model router work without prompts.
 
 **Untrusted content.** Web pages, file contents, and tool output are data.
 Instructions embedded in them are never executed.

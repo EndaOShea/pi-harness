@@ -137,6 +137,81 @@ export function findWorkspaceEscapes(
   return findings;
 }
 
+const UPLOAD_FLAGS = new Set([
+  "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+  "--data-ascii", "--json", "-F", "--form", "--form-string",
+  "-T", "--upload-file",
+  "--post-data", "--post-file", "--body-data", "--body-file",
+]);
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+const NET_PROGRAMS = new Set(["nc", "ncat", "netcat", "socat", "scp", "sftp"]);
+
+const LOCAL_URL = /^https?:\/\/(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])(?::\d+)?(?:\/|$)/i;
+
+function segmentProgram(tokens) {
+  for (const token of tokens) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      continue; // leading VAR=value assignment
+    }
+    return token;
+  }
+  return "";
+}
+
+/**
+ * Find outbound-transmission shapes in a shell command: uploads via
+ * curl/wget data flags or mutating HTTP methods (unless every visible URL
+ * is local), raw network programs (nc, socat, scp, sftp), rsync to a
+ * remote target, and git push. Lexical, like every command matcher here:
+ * it narrows the exfiltration surface, it does not seal it.
+ */
+export function findEgressCommands(command) {
+  const findings = [];
+  for (const segment of command.split(/[;|&]+/)) {
+    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) {
+      continue;
+    }
+    const program = segmentProgram(tokens);
+    if (NET_PROGRAMS.has(program)) {
+      findings.push({ program, reason: "raw network transfer" });
+      continue;
+    }
+    if (program === "git" && tokens.includes("push")) {
+      findings.push({ program: "git push", reason: "remote publication" });
+      continue;
+    }
+    if (program === "rsync") {
+      if (tokens.some((t) => /^[^\/=][^=]*@[^=]*:/.test(t) || t.startsWith("rsync://"))) {
+        findings.push({ program, reason: "remote file transfer" });
+      }
+      continue;
+    }
+    if (program === "curl" || program === "wget" || program === "wget2") {
+      const carriesData = tokens.some(
+        (t) => UPLOAD_FLAGS.has(t)
+          || [...UPLOAD_FLAGS].some((flag) => t.startsWith(`${flag}=`)),
+      );
+      const mutates = tokens.some(
+        (t, i) => (t === "-X" || t === "--request")
+          && MUTATING_METHODS.has((tokens[i + 1] ?? "").toUpperCase()),
+      );
+      if (!carriesData && !mutates) {
+        continue;
+      }
+      const urls = tokens.filter((t) => /^https?:\/\//i.test(t.replace(/^["']|["']$/g, "")));
+      const allLocal = urls.length > 0
+        && urls.every((u) => LOCAL_URL.test(u.replace(/^["']|["']$/g, "")));
+      if (!allLocal) {
+        findings.push({ program, reason: "data-carrying HTTP request" });
+      }
+    }
+  }
+  return findings;
+}
+
 /**
  * Find secret-shaped paths referenced anywhere in a shell command, so the
  * bash tool cannot read what the file tools would gate. Tokens are checked

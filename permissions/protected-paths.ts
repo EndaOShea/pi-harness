@@ -11,6 +11,7 @@ import {
   findSecretPathReferences,
   isSecretFile,
 } from "./lib/path-matchers.js";
+import { resolvePhysicalPath } from "./lib/resolve-path.js";
 
 // Protected locations from the AGENTS.md operating contract. File-tool
 // writes and edits inside these directories require per-call approval.
@@ -27,7 +28,8 @@ const PROTECTED_DIRECTORIES = [
 
 const HOME = homedir();
 
-function protectedPathDecision(absolutePath: string) {
+function protectedPathDecision(lexicalPath: string) {
+  const absolutePath = resolvePhysicalPath(lexicalPath);
   const entry = findProtectedDirectory(
     absolutePath,
     HOME,
@@ -64,7 +66,7 @@ export default function permissions(api: PermissionsAPI) {
           return protectedPathDecision(tool.absolutePath);
         },
         read(tool) {
-          const rule = isSecretFile(tool.absolutePath, HOME);
+          const rule = isSecretFile(resolvePhysicalPath(tool.absolutePath), HOME);
           if (!rule) {
             return undefined;
           }
@@ -98,12 +100,13 @@ export default function permissions(api: PermissionsAPI) {
           if (!tool.absolutePath) {
             return undefined;
           }
+          const resolved = resolvePhysicalPath(tool.absolutePath);
           const directory = findProtectedDirectory(
-            tool.absolutePath,
+            resolved,
             HOME,
             PROTECTED_DIRECTORIES,
           );
-          const rule = isSecretFile(tool.absolutePath, HOME);
+          const rule = isSecretFile(resolved, HOME);
           if (!directory && !rule) {
             return undefined;
           }

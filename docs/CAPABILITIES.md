@@ -278,6 +278,12 @@ Usage rules:
   workspace root plus OS temp directories and read-only pseudo-filesystems
   are exempt. This is approval gating at the tool boundary, not an OS
   sandbox — an approved program can still act outside the tree.
+- Commands that transmit data off the machine (uploads, raw network
+  transfers, `git push`) require per-call approval
+  (`permissions/confirm-egress.ts`); localhost destinations are exempt.
+- File-tool paths are resolved through symlinks (`permissions/lib/
+  resolve-path.js`) before protected-path, secret, and workspace matching,
+  so a symlink cannot launder access to a gated location.
 
 Implementation:
 
