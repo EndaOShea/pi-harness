@@ -12,6 +12,10 @@ release tag automatically; tagging remains an explicit maintainer action.
   `@playwright/mcp@0.0.79`; it uses headless isolated Firefox by default and
   exposes an explicit tool allowlist that omits file transfer and arbitrary
   JavaScript execution;
+- made Superpowers an explicit escalation layer in the operating contract:
+  workflows are invoked only for work that warrants a plan, never for
+  conversation, questions, or single-file minor edits, overriding
+  skill-internal always-invoke bootstrap instructions;
 - hardened credential protection: `~/.pi` (Pi's authentication store, MCP
   override, and settings) is now a protected directory for file-tool writes,
   and shell commands referencing secret paths (`cat ~/.pi/agent/auth.json`,

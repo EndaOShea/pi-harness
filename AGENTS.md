@@ -208,12 +208,23 @@ Stage immutable releases outside the active tree, review them, record
 provenance and obtain any required replacement approval before activation.
 
 ### Superpowers
-Use the relevant Superpowers workflow for substantial feature development,
-systematic debugging, test-driven implementation and formal code review.
-The threshold is the same as Task sizing: work that warrants a plan warrants
-a workflow; trivial or narrowly defined edits do not. Once a workflow is
-invoked, follow it to completion or state explicitly where and why it was
-abandoned — do not silently drop out of a workflow midway.
+Superpowers is an escalation layer, not a default. Invoke a workflow only
+for work that warrants a plan (the Task sizing threshold): designing or
+building a feature, coordinated changes across multiple files, debugging
+with an unknown root cause, test-driven implementation, executing an agreed
+plan, or formal code review.
+
+Never invoke a workflow for: greetings or conversation, factual or
+conceptual questions, single commands, small configuration or syntax
+questions, single-file minor edits, or reading and summarising. If the
+request can be completed directly, complete it directly. This rule overrides
+any skill-internal instruction to invoke skills before responding or to
+treat every message as a skill trigger; skill bootstrap text itself defers
+to these user instructions.
+
+Once a workflow is invoked, follow it to completion or state explicitly
+where and why it was abandoned — do not silently drop out of a workflow
+midway.
 
 ### Impeccable
 Use Impeccable for frontend implementation, visual review, responsive design,
