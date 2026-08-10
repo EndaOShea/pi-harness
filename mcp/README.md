@@ -162,6 +162,85 @@ same discipline the harness applies everywhere else:
    your harness must have it; everything else stays an optional example.
 6. Test each server independently before enabling it in normal sessions.
 
+### Walkthrough: adding a personal server to the shared layer
+
+The installer only merges the required servers from `config/required-mcp.json`
+into `~/.pi/agent/mcp.json`. Personal, optional servers live in the shared
+user-global layer `~/.config/mcp/mcp.json`, which the harness never populates
+automatically — so a fresh machine has none of them until you add them. This
+is per-machine setup, not something a reinstall reproduces; keep the canonical
+list of your servers in a fork-owned doc so a new machine is a known checklist.
+
+1. **Declare the server in your fork's example**, e.g. `mcp/mcp.global.example.json`,
+   so it is version-controlled and reviewable. Prefer a hosted read-only URL:
+
+   ```json
+   {
+     "mcpServers": {
+       "my-server": {
+         "url": "https://mcp.example.com/mcp",
+         "lifecycle": "lazy"
+       }
+     }
+   }
+   ```
+
+   A local stdio launcher is the offline alternative; reference a machine-set
+   environment variable rather than a hard-coded path, and ship it
+   `"disabled": true` until its launcher is installed:
+
+   ```json
+   {
+     "mcpServers": {
+       "my-server-local": {
+         "command": "bash",
+         "args": ["-lc", "exec \"$MY_SERVER_HOME/scripts/run-mcp.sh\""],
+         "lifecycle": "lazy",
+         "disabled": true
+       }
+     }
+   }
+   ```
+
+2. **Verify the endpoint answers a real MCP handshake** before wiring it in —
+   a plain `GET` returns 400 from a streamable-HTTP server, which is expected;
+   POST an `initialize` instead:
+
+   ```bash
+   curl -s -X POST https://mcp.example.com/mcp \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json, text/event-stream' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
+   ```
+
+   A `result` with `serverInfo` means it will connect in Pi.
+
+3. **Merge (do not overwrite) the entry into the live shared layer.** If the
+   file already holds other servers, add yours to `mcpServers` rather than
+   replacing the file:
+
+   ```bash
+   mkdir -p ~/.config/mcp
+   # first server only — copy the template
+   cp mcp/mcp.global.example.json ~/.config/mcp/mcp.json
+   # additional servers — merge, preserving existing entries
+   python3 - <<'PY'
+   import json, pathlib
+   live = pathlib.Path.home() / ".config/mcp/mcp.json"
+   cfg = json.loads(live.read_text()) if live.exists() else {"mcpServers": {}}
+   tmpl = json.loads(pathlib.Path("mcp/mcp.global.example.json").read_text())
+   cfg["mcpServers"]["my-server"] = tmpl["mcpServers"]["my-server"]
+   live.write_text(json.dumps(cfg, indent=2))
+   print("shared layer now:", list(cfg["mcpServers"]))
+   PY
+   ```
+
+4. **Restart Pi and check `/mcp`.** A lazy server shows `(not cached)` until
+   first use — that is normal, not a failure. Highlight it and press `ctrl+r`
+   to reconnect (fetches and caches its tool schemas), then `↵` to expand and
+   confirm the tool count matches what you documented. Or just call one of its
+   tools; the connection fires on first use.
+
 ## Verification
 
 Validate the required Pi override after a normal harness installation:
@@ -185,9 +264,11 @@ Restart Pi, then inspect the MCP connections:
 
 Every normal harness installation should list `context7`. A profile installed
 with `--skip-mcp` will list it only if another configuration layer provides
-it. The shared template's disabled `example-local-server` entry remains
-unavailable until a real launcher is configured and the entry is enabled.
-Reconnect a configured server when needed:
+it. Personal servers added to the shared layer appear here too; a lazy one
+shows `(not cached)` until first use. The shared template's disabled
+`example-local-server` entry remains unavailable until a real launcher is
+configured and the entry is enabled. Reconnect a configured server when needed
+(this also caches a lazy server's tools without waiting for first use):
 
 ```text
 /mcp reconnect context7
