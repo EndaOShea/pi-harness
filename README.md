@@ -415,7 +415,7 @@ immutable release without modifying `.pi/skills/impeccable`:
 ```bash
 ./scripts/check-impeccable.py compare \
   --download \
-  --release skill-v4.0.4 \
+  --release skill-v4.1.1 \
   --staging-parent /tmp
 ```
 
