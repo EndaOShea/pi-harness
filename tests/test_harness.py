@@ -1853,6 +1853,72 @@ assert(held >= 250, 'second request held by the first claim, held ' + held + 'ms
                 self.assertRegex(entry["upstreamReleaseCommit"], r"^[0-9a-f]{40}$")
                 self.assertIn("verified byte-identical", entry["reviewStatus"])
 
+    def test_documentation_does_not_restate_stale_skill_provenance(self) -> None:
+        # config/third-party-skills.json is machine-checked, so it stays
+        # correct across updates. The prose that repeats its contents has no
+        # such guard, and on 2026-08-17 three documents were still naming
+        # 4.0.4 after the tree moved to 4.1.1 — including a README example
+        # whose --release argument an operator copies and types.
+        #
+        # CHANGELOG.md and docs/superpowers/ are deliberately out of scope:
+        # they are historical records, where an entry naming the version that
+        # was current when it was written stays correct forever.
+        inventory = json.loads(
+            (ROOT / "config" / "third-party-skills.json").read_text(encoding="utf-8")
+        )
+        current_tags = {
+            entry["upstreamReleaseTag"]
+            for entry in inventory["skills"]
+            if entry.get("upstreamReleaseTag")
+        }
+        current_versions = {entry["version"] for entry in inventory["skills"]}
+        impeccable = next(
+            entry for entry in inventory["skills"] if entry["name"] == "impeccable"
+        )
+
+        documents = sorted(ROOT.glob("*.md")) + sorted((ROOT / "docs").glob("*.md"))
+        documents = [path for path in documents if path.name != "CHANGELOG.md"]
+        self.assertIn(ROOT / "README.md", documents)
+        self.assertIn(ROOT / "THIRD_PARTY_NOTICES.md", documents)
+
+        for path in documents:
+            with self.subTest(document=path.relative_to(ROOT).as_posix()):
+                text = path.read_text(encoding="utf-8")
+                cited_tags = set(re.findall(r"skill-v\d+\.\d+\.\d+", text))
+                self.assertLessEqual(
+                    cited_tags,
+                    current_tags,
+                    "documentation cites a release tag the provenance manifest "
+                    "no longer records",
+                )
+                cited_versions = set(
+                    re.findall(
+                        r"declar\w*\s+(?:skill\s+)?version\s+`([^`]+)`",
+                        text,
+                    )
+                )
+                self.assertLessEqual(
+                    cited_versions,
+                    current_versions,
+                    "documentation declares a skill version the provenance "
+                    "manifest no longer records",
+                )
+
+        # The notices file is the licensing record, so its pin must be
+        # present rather than merely non-contradictory: an update that leaves
+        # the old commit behind removes the new one from this file.
+        notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        for claim in (
+            impeccable["version"],
+            impeccable["upstreamReleaseTag"],
+            impeccable["upstreamReleaseCommit"],
+        ):
+            self.assertIn(claim, notices)
+        self.assertIn(
+            impeccable["version"],
+            (ROOT / "docs" / "CAPABILITIES.md").read_text(encoding="utf-8"),
+        )
+
     def test_impeccable_checker_accepts_identical_candidate(self) -> None:
         # Release tag and hash come from the provenance manifest rather than
         # being repeated here. Hard-coding them meant every Impeccable
