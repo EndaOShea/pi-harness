@@ -1854,6 +1854,16 @@ assert(held >= 250, 'second request held by the first claim, held ' + held + 'ms
                 self.assertIn("verified byte-identical", entry["reviewStatus"])
 
     def test_impeccable_checker_accepts_identical_candidate(self) -> None:
+        # Release tag and hash come from the provenance manifest rather than
+        # being repeated here. Hard-coding them meant every Impeccable
+        # update failed this test for the wrong reason — a stale constant
+        # rather than a real mismatch.
+        inventory = json.loads(
+            (ROOT / "config" / "third-party-skills.json").read_text(encoding="utf-8")
+        )
+        entry = next(
+            item for item in inventory["skills"] if item["name"] == "impeccable"
+        )
         result = subprocess.run(
             [
                 str(IMPECCABLE_CHECKER),
@@ -1861,7 +1871,7 @@ assert(held >= 250, 'second request held by the first claim, held ' + held + 'ms
                 "--candidate-dir",
                 str(ROOT / ".pi" / "skills" / "impeccable"),
                 "--release",
-                "skill-v4.0.4",
+                entry["upstreamReleaseTag"],
             ],
             cwd=ROOT,
             text=True,
@@ -1871,10 +1881,7 @@ assert(held >= 250, 'second request held by the first claim, held ' + held + 'ms
         )
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("Status: identical", result.stdout)
-        self.assertIn(
-            "1427222770f2c19f78471554a3f717a8946feb49e9a9882543be242c7a27570f",
-            result.stdout,
-        )
+        self.assertIn(entry["contentSha256"], result.stdout)
 
     def test_impeccable_checker_stages_archive_without_mutating_local_tree(self) -> None:
         fixture_root = retained_on_failure_tmpdir(self, "impeccable-check-test-")
