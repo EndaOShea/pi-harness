@@ -5,6 +5,27 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- gated installation on a minimum Pi version (`MINIMUM_PI_VERSION` in
+  `scripts/install.sh`, currently `0.84.1`). Three pinned packages import
+  `@earendil-works/pi-ai/compat`, a subpath that first appears in
+  pi-ai@0.81.0; without the gate an older Pi installed successfully and
+  then failed to start. The check runs before any package is fetched or
+  any file is written, and reports the upgrade command;
+- extended the secret and destructive matchers: recursive searches rooted
+  at credential or browser-profile directories, sensitive Windows Registry
+  strings, environment-exposure commands, and secret paths named as shell
+  operands now require approval, and the destructive fallbacks cover
+  `tee` overwrites plus a fail-closed case for commands whose wrapper
+  nesting exceeds the normalizer's budget. Ordinary files such as
+  `/etc/hosts`, `~/.aws/config`, browser history, and committed `.env`
+  examples stay free to avoid approval fatigue;
+- fixed a type error in `permissions/confirm-deletions.ts`, which
+  annotated a match's `commands` as a mutable `SimpleCommand[]` where the
+  permissions API declares it `readonly`;
+- added continuous-validation assertions for the workflow itself, so
+  dropping the macOS matrix, the strict-mode environment, the exact
+  runtime installs, or the validation command fails the suite rather than
+  silently weakening CI;
 - fixed the workspace boundary in `permissions/workspace-scope.ts`, which
   read `input.permissionRoot ?? input.cwd`. `permissionRoot` is the
   directory the policy module was loaded from — the evaluator injects it

@@ -72,6 +72,17 @@ PACKAGE_FILE="$HARNESS_ROOT/packages/pi-packages.txt"
 RESOURCE_MANIFEST="$HARNESS_ROOT/config/resources.json"
 REQUIRED_MCP_FILE="$HARNESS_ROOT/config/required-mcp.json"
 
+# Lowest Pi release the pinned packages are known to load under.
+#
+# Three pinned packages (pi-web-access, pi-subagents, pi-permissions)
+# import '@earendil-works/pi-ai/compat', a subpath that first appears in
+# pi-ai@0.81.0. Older releases cannot resolve it and Pi fails to start.
+#
+# 0.81.0 is the theoretical minimum; 0.84.1 is the version every pinned
+# package was verified against. Bump this when packages are upgraded and
+# re-verified.
+MINIMUM_PI_VERSION="0.84.1"
+
 SOURCE_AGENTS="$HARNESS_ROOT/AGENTS.md"
 SOURCE_EXTENSIONS="$HARNESS_ROOT/extensions"
 SOURCE_PERMISSIONS="$HARNESS_ROOT/permissions"
@@ -447,6 +458,57 @@ for name, server in servers.items():
             "required harness definition. Resolve it before installation."
         )
 PY
+}
+
+# version_lt <a> <b>
+#
+# Succeeds (exit 0) when version <a> is strictly lower than version <b>,
+# and fails (exit 1) when <a> is equal to or higher than <b>.
+#
+# Both arguments arrive as bare dotted versions ("0.78.1", "0.84.1").
+# A trailing prerelease suffix ("0.85.0-beta.1") may be present and is
+# compared on its numeric components alone.
+#
+# Note the comparison must be numeric, not lexical: "0.9.0" is LOWER
+# than "0.84.1" as a string, but HIGHER as a version.
+#
+# Pure Bash: no dependency on 'sort -V', whose support varies across the
+# BSD sort shipped on macOS. The 10# prefix forces base ten so a
+# zero-padded component ("0.08.1") is never read as octal.
+version_lt() {
+    local left right index
+    IFS='.-' read -ra left <<<"$1"
+    IFS='.-' read -ra right <<<"$2"
+
+    for index in 0 1 2; do
+        ((10#${left[index]:-0} < 10#${right[index]:-0})) && return 0
+        ((10#${left[index]:-0} > 10#${right[index]:-0})) && return 1
+    done
+
+    return 1
+}
+
+validate_pi_version() {
+    log "Validating Pi runtime"
+
+    require_command pi
+
+    local reported
+    local current
+    reported="$(pi --version 2>&1 || true)"
+
+    [[ "$reported" =~ ([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?) ]] ||
+        fail "Could not read a version from 'pi --version': $reported"
+    current="${BASH_REMATCH[1]}"
+
+    if version_lt "$current" "$MINIMUM_PI_VERSION"; then
+        fail "Pi $current is older than the required $MINIMUM_PI_VERSION.
+       The pinned harness packages import @earendil-works/pi-ai/compat,
+       which is unavailable before Pi 0.81.0.
+       Upgrade with: pi update pi"
+    fi
+
+    info "Pi version: $current (>= $MINIMUM_PI_VERSION)"
 }
 
 validate_repository() {
@@ -1069,6 +1131,9 @@ main() {
     require_command grep
     require_command python3
 
+    if ((SKIP_PACKAGES == 0)); then
+        validate_pi_version
+    fi
     validate_repository
     run mkdir -p "$PI_AGENT_DIR"
     install_packages
