@@ -3,8 +3,18 @@
 All notable harness changes are recorded here. The project does not create a
 release tag automatically; tagging remains an explicit maintainer action.
 
-## Unreleased
+## 0.1.0-rc.8 - 2026-08-17
 
+- added `test_documentation_does_not_restate_stale_skill_provenance`, which
+  holds the prose to `config/third-party-skills.json`. Both this repository and
+  the harness it is ported from had the same defect: the manifest is
+  machine-checked and never drifted, while the documents restating its contents
+  named `4.0.4` after the tree moved to `4.1.1`. The test rejects any
+  `skill-vX.Y.Z` tag or declared version in a root or `docs/` Markdown file
+  that the manifest no longer records, and requires `THIRD_PARTY_NOTICES.md` to
+  carry the current version, tag, and upstream commit. `CHANGELOG.md` is out of
+  scope as a historical record. Verified by reintroducing each stale state and
+  confirming the test fails on each;
 - narrowed the CI triggers to `pull_request`, pushes to `main`, and the weekly
   Impeccable check, and made in-flight runs cancel on branches but never on
   `main`. An unfiltered `push` alongside `pull_request` ran the whole matrix
