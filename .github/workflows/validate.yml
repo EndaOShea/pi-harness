@@ -1,10 +1,31 @@
 name: Validate harness
 
+# Triggers are deliberately narrow. An unfiltered `push` alongside
+# `pull_request` ran the whole matrix twice for every push to a branch with an
+# open PR — two ubuntu jobs and two macOS jobs where one of each was needed.
+#
+# Branch work is validated through the pull request only, and `push` covers
+# the merge commit on main. Pushing a branch with no PR open runs nothing,
+# which is the intent: run CI when the work is proposed, not while it is still
+# being shaped. Validate locally with ./scripts/validate.sh, which is the
+# identical gate.
+#
+# Forks: Actions minutes are free on public repositories but not on private
+# ones, where the macOS leg bills at a 10x multiplier. If you fork this
+# privately, this filtering is worth keeping.
 on:
   push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "23 8 * * 1"
+
+# Supersede a branch's in-flight run when it is pushed again. Never on main:
+# every commit that lands there must keep its own validated result rather
+# than being cancelled by the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

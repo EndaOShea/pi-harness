@@ -235,6 +235,24 @@ always fails. To enable it locally:
 npm install --no-save typescript @types/node   # ignored by Git
 ```
 
+### When CI runs
+
+`.github/workflows/validate.yml` runs the full Linux and macOS matrix on pull
+requests and on pushes to `main`, plus a weekly scheduled Impeccable update
+check. Pushing a branch with no pull request open runs nothing: branch work is
+validated through the pull request, and `push` covers only the merge commit on
+main. An unfiltered `push` alongside `pull_request` ran the whole matrix twice
+for every push to a branch with an open PR.
+
+In-flight branch runs are superseded when the branch is pushed again. Runs on
+`main` are never cancelled: every commit that lands there keeps its own
+validated result. Run `./scripts/validate.sh` locally while the work is still
+being shaped — it is the identical gate.
+
+Forks: Actions minutes are free on public repositories but not on private
+ones, where the macOS leg bills at a 10x multiplier. If you fork this
+privately, keep the filtering.
+
 ## Preview deployment
 
 Dry run against the normal Pi directory:
@@ -463,3 +481,8 @@ Keep changes minimal and preserve existing user configuration. Update setup,
 usage, permission level, provenance, and verification documentation whenever a
 capability changes. Never commit credentials, MCP secrets, private paths, or
 authentication files.
+
+Run `./scripts/validate.sh` before opening a pull request: a pushed branch
+without one runs no CI (see [When CI runs](#when-ci-runs)). Record every
+behavioural change in `CHANGELOG.md` under `Unreleased`; the version in
+`VERSION` is bumped only when a maintainer tags a release.

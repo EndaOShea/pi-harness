@@ -5,6 +5,16 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- narrowed the CI triggers to `pull_request`, pushes to `main`, and the weekly
+  Impeccable check, and made in-flight runs cancel on branches but never on
+  `main`. An unfiltered `push` alongside `pull_request` ran the whole matrix
+  twice for every push to a branch with an open PR — two ubuntu jobs and two
+  macOS jobs where one of each was needed. Pushing a branch with no PR now
+  runs nothing, which is the intent: validate locally while the work is being
+  shaped, in CI when it is proposed. Actions minutes are free on this public
+  repository, but the duplication is wasted queue time either way, and a fork
+  kept private pays for it at a 10x macOS multiplier. Documented in `README.md`
+  (When CI runs);
 - refreshed the Impeccable provenance the `skill-v4.1.1` adoption left behind.
   `THIRD_PARTY_NOTICES.md` and `docs/CAPABILITIES.md` still named `4.0.4` and
   the 4.0.4 commit, and the staged-comparison example in `README.md` still
