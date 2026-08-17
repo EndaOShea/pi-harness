@@ -234,7 +234,7 @@ never deletes newer state or old backups automatically.
 
 ## Release readiness
 
-Version `0.1.0-rc.7` is a deployment candidate. The repository validation,
+Version `0.1.0-rc.8` is a deployment candidate. The repository validation,
 isolated installer and uninstaller tests, and CI workflow are in place. A
 public release still requires an explicit maintainer decision to create a tag
 and publish release notes. A real current-user installation and any production

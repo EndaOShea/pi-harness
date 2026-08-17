@@ -3,7 +3,7 @@
 All notable harness changes are recorded here. The project does not create a
 release tag automatically; tagging remains an explicit maintainer action.
 
-## Unreleased
+## 0.1.0-rc.8 - 2026-08-17
 
 - added `test_documentation_does_not_restate_stale_skill_provenance`, which
   holds the prose to `config/third-party-skills.json`. Both this repository and
