@@ -94,12 +94,21 @@ def run_policy_cases(
     the policy plus permissions/lib are copied beside it.
     """
     if not PI_PERMISSIONS_LIB.is_dir():
+        if os.environ.get("HARNESS_REQUIRE_POLICY_INTEGRATION") == "1":
+            testcase.fail(
+                f"required policy integration dependency missing: {PI_PERMISSIONS_LIB}"
+            )
         testcase.skipTest(
             "pi-permissions library is not installed under "
             f"{PI_AGENT_NPM_DIR}"
         )
     pi_nested = pi_package_node_modules()
     if pi_nested is None:
+        if os.environ.get("HARNESS_REQUIRE_POLICY_INTEGRATION") == "1":
+            testcase.fail(
+                "required policy integration dependency missing: "
+                "pi-coding-agent package (peer dependencies) not found via PATH"
+            )
         testcase.skipTest(
             "pi-coding-agent package (peer dependencies) not found via PATH"
         )
@@ -864,27 +873,38 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
         )
 
     def test_workspace_scope_policy_decisions(self) -> None:
+        # Every case supplies both keys on purpose. permissionRoot is the
+        # directory this policy was loaded from, which the evaluator injects
+        # alongside cwd; anchoring the workspace to it would scope the agent
+        # to its own install directory. Keeping the two distinct here fails
+        # if the policy ever reads the wrong one.
         root = "/home/tester/project"
+        permission_root = "/home/tester/.pi/agent/permissions"
         cases = [
-            {"permissionRoot": root,
+            {"cwd": root, "permissionRoot": permission_root,
              "tool": {"toolName": "write", "path": "src/main.py",
                       "absolutePath": f"{root}/src/main.py", "input": {}}},
-            {"permissionRoot": root,
+            {"cwd": root, "permissionRoot": permission_root,
              "tool": {"toolName": "write", "path": "../elsewhere/x.py",
                       "absolutePath": "/home/tester/elsewhere/x.py", "input": {}}},
-            {"permissionRoot": root,
+            {"cwd": root, "permissionRoot": permission_root,
              "tool": {"toolName": "edit", "path": "/etc/hosts",
                       "absolutePath": "/etc/hosts", "input": {}}},
-            {"permissionRoot": root,
+            {"cwd": root, "permissionRoot": permission_root,
              "tool": {"toolName": "write", "path": "/tmp/scratch/x.json",
                       "absolutePath": "/tmp/scratch/x.json", "input": {}}},
-            {"permissionRoot": root,
+            # macOS resolves /tmp through /private; without the alias in
+            # EXEMPT_PREFIXES this prompts on every temp-file write.
+            {"cwd": root, "permissionRoot": permission_root,
+             "tool": {"toolName": "write", "path": "/private/tmp/scratch/x.json",
+                      "absolutePath": "/private/tmp/scratch/x.json", "input": {}}},
+            {"cwd": root, "permissionRoot": permission_root,
              "tool": {"toolName": "read", "path": "/etc/hosts",
                       "absolutePath": "/etc/hosts", "input": {}}},
-            {"permissionRoot": root,
+            {"cwd": root, "permissionRoot": permission_root,
              "tool": {"toolName": "bash",
                       "command": "cat /etc/passwd", "input": {}}},
-            {"permissionRoot": root,
+            {"cwd": root, "permissionRoot": permission_root,
              "tool": {"toolName": "bash",
                       "command": "python3 -m unittest", "input": {}}},
         ]
@@ -893,7 +913,7 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
         )
         self.assertEqual(
             decisions,
-            [None, "request", "request", None, None, "request", None],
+            [None, "request", "request", None, None, None, "request", None],
         )
 
     def test_protected_paths_policy_resolves_symlinked_writes(self) -> None:
@@ -919,10 +939,10 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
         ws = retained_on_failure_tmpdir(self, "symlink-ws-")
         (ws / "escape").symlink_to("/etc")
         cases = [
-            {"permissionRoot": str(ws),
+            {"cwd": str(ws),
              "tool": {"toolName": "write", "path": "escape/hosts",
                       "absolutePath": f"{ws}/escape/hosts", "input": {}}},
-            {"permissionRoot": str(ws),
+            {"cwd": str(ws),
              "tool": {"toolName": "write", "path": "notes.md",
                       "absolutePath": f"{ws}/notes.md", "input": {}}},
         ]

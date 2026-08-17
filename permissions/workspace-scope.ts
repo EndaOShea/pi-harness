@@ -17,7 +17,15 @@ import { resolvePhysicalPath } from "./lib/resolve-path.js";
 // stay ungated here — secret-shaped reads are covered by the
 // protected-paths policy. OS scratch space and read-only pseudo-
 // filesystems stay usable without prompts.
-const EXEMPT_PREFIXES = ["/tmp", "/var/tmp", "/dev", "/proc", "/sys"];
+const EXEMPT_PREFIXES = [
+  "/tmp",
+  // macOS resolves /tmp through the /private symlink.
+  "/private/tmp",
+  "/var/tmp",
+  "/dev",
+  "/proc",
+  "/sys",
+];
 
 const HOME = homedir();
 
@@ -29,7 +37,12 @@ export default function permissions(api: PermissionsAPI) {
       "references outside the session's working tree.",
 
     handler(input) {
-      const root = input.permissionRoot ?? input.cwd;
+      // The session's working directory, never permissionRoot: that is the
+      // directory this policy module was loaded from (~/.pi/agent/
+      // permissions), so using it would anchor the workspace to the install
+      // location — real project work would read as outside the tree, and
+      // writes into the permissions directory as inside it.
+      const root = input.cwd;
       if (!root) {
         return undefined;
       }

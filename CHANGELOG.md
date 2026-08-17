@@ -5,7 +5,25 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
-- upgraded the required web research extension to `pi-web-access@0.19.0`,
+- fixed the workspace boundary in `permissions/workspace-scope.ts`, which
+  read `input.permissionRoot ?? input.cwd`. `permissionRoot` is the
+  directory the policy module was loaded from — the evaluator injects it
+  per hook alongside `cwd` — so the workspace was anchored to
+  `~/.pi/agent/permissions` rather than the session's working tree: real
+  project work read as outside the workspace, while writes into the
+  permissions directory read as inside it. The policy now reads `cwd`, and
+  the test supplies both keys with different values so reading the wrong
+  one fails;
+- exempted `/private/tmp` in `permissions/workspace-scope.ts`. macOS
+  resolves `/tmp` through the `/private` symlink, so the existing `/tmp`
+  prefix missed and every temp-file write prompted. This shipped
+  undetected because continuous validation ran only on Linux;
+- extended continuous validation to macOS as well as Linux, and made it
+  strict: `HARNESS_REQUIRE_POLICY_INTEGRATION=1` now turns a skipped
+  permission-policy integration test into a failure, and requires
+  ShellCheck rather than skipping static analysis. CI installs the exact
+  Pi runtime and pinned permissions package so the policies are exercised
+  against the real library instead of being silently skipped;
   retaining exact package pinning while gaining its stricter remote-fetch
   routing, grounded answer mode, raw fetch mode, and bounded content search;
 - added a disabled, optional Playwright MCP application template pinned to

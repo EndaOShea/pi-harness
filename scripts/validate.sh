@@ -17,6 +17,9 @@ if command -v shellcheck >/dev/null 2>&1; then
         "$HARNESS_ROOT/scripts/install.sh" \
         "$HARNESS_ROOT/scripts/uninstall.sh" \
         "$HARNESS_ROOT/scripts/validate.sh"
+elif [[ "${HARNESS_REQUIRE_POLICY_INTEGRATION:-0}" == "1" ]]; then
+    printf 'ERROR: shellcheck is required in strict CI validation.\n' >&2
+    exit 1
 else
     printf 'NOTE: shellcheck not found; static shell analysis skipped.\n'
 fi
