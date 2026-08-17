@@ -5,6 +5,23 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## 0.1.0-rc.7 - 2026-08-17
 
+- adopted Impeccable `skill-v4.1.1` (from `skill-v4.0.4`): 57 changed files,
+  2 added, 2 removed, verified byte-identical to the upstream release archive
+  through the staged checker. Reviewed for new capability before adoption.
+  `concept-seed.mjs` now makes one outbound GET to
+  `https://impeccable.style/api/roll`, sending only scope, mode, grain,
+  platform, a `crypto.randomBytes(4)` seed and a re-roll counter — no project
+  files, prompts, or conversation — and failing closed to a degraded local
+  roll; override or disable it with `IMPECCABLE_API_URL`. That fetch is not
+  matched by `confirm-egress.ts`, which gates shell transfer programs rather
+  than node scripts, so it is recorded in provenance rather than enforced.
+  `lib/open-system-browser.mjs` is new and spawns `open`/`xdg-open` through
+  argv with no shell, on an internally built `http://127.0.0.1:<port>/` URL,
+  with a `--no-open` opt-out. Forks that do not want the roll service should
+  set `IMPECCABLE_API_URL` to an unroutable value;
+- derived the Impeccable checker test's release tag and content hash from
+  `config/third-party-skills.json` instead of repeating them. Hard-coded
+  constants meant every skill update failed that test for the wrong reason;
 - added a schema-versioned managed-state receipt
   (`$PI_AGENT_DIR/harness/.managed-state.json`, mode `0600`) and
   `scripts/lib/managed_state.py`. Install and uninstall now act only on
