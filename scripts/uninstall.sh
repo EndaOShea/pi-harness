@@ -67,6 +67,7 @@ HARNESS_ROOT="$(
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 SETTINGS_FILE="$PI_AGENT_DIR/settings.json"
 RESOURCE_MANIFEST="$HARNESS_ROOT/config/resources.json"
+SETTINGS_DEFAULTS_FILE="$HARNESS_ROOT/config/settings-defaults.json"
 REQUIRED_MCP_FILE="$HARNESS_ROOT/config/required-mcp.json"
 SOURCE_PERMISSIONS="$HARNESS_ROOT/permissions"
 
@@ -75,6 +76,7 @@ TARGET_EXTENSIONS="$PI_AGENT_DIR/extensions"
 TARGET_PERMISSIONS="$PI_AGENT_DIR/permissions"
 TARGET_HARNESS_ROOT="$PI_AGENT_DIR/harness"
 TARGET_MCP_FILE="$PI_AGENT_DIR/mcp.json"
+MANAGED_STATE_HELPER="$HARNESS_ROOT/scripts/lib/managed_state.py"
 
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
 BACKUP_DIR="$PI_AGENT_DIR/backups/harness-uninstall-$TIMESTAMP-$$"
@@ -95,6 +97,72 @@ warn() {
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
     exit 1
+}
+
+managed_state() {
+    python3 "$MANAGED_STATE_HELPER" "$@" \
+        --harness-root "$HARNESS_ROOT" \
+        --agent-dir "$PI_AGENT_DIR"
+}
+
+validate_json_object_if_present() {
+    local path="$1"
+    local description="$2"
+    [[ -e "$path" || -L "$path" ]] || return 0
+
+    python3 - "$path" "$description" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]).expanduser()
+description = sys.argv[2]
+try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Invalid {description} JSON in {path}: {exc}") from exc
+if not isinstance(value, dict):
+    raise SystemExit(f"Expected {description} to be a JSON object: {path}")
+PY
+}
+
+load_resource_targets() {
+    RESOURCE_TARGETS="$(
+        RESOURCE_MANIFEST="$RESOURCE_MANIFEST" \
+        TARGET_HARNESS_ROOT="$TARGET_HARNESS_ROOT" \
+            python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+manifest = json.loads(
+    Path(os.environ["RESOURCE_MANIFEST"]).read_text(encoding="utf-8")
+)
+target_root = Path(os.environ["TARGET_HARNESS_ROOT"]).expanduser()
+for kind in ("skills", "prompts"):
+    for entry in manifest[kind]:
+        print(target_root / kind / entry["name"])
+PY
+    )" || fail "Could not read the resource manifest."
+}
+
+preflight_uninstall() {
+    validate_json_object_if_present "$SETTINGS_FILE" "Pi settings"
+    validate_json_object_if_present "$TARGET_MCP_FILE" "Pi MCP override"
+    local args=(preflight-uninstall --backup-dir "$BACKUP_DIR")
+    ((KEEP_MCP)) && args+=(--keep-mcp)
+    managed_state "${args[@]}"
+}
+
+apply_receipt_uninstall() {
+    local args=(apply-uninstall --backup-dir "$BACKUP_DIR")
+    ((DRY_RUN)) && args+=(--dry-run)
+    ((KEEP_MCP)) && args+=(--keep-mcp)
+    managed_state "${args[@]}"
+
+    if ((!DRY_RUN)) && [[ -d "$BACKUP_DIR" ]]; then
+        BACKUP_CREATED=1
+    fi
 }
 
 on_error() {
@@ -192,24 +260,6 @@ remove_managed_links() {
     log "Removing harness-managed links"
     remove_harness_link "$TARGET_AGENTS" "Global AGENTS.md"
 
-    RESOURCE_TARGETS="$(
-        RESOURCE_MANIFEST="$RESOURCE_MANIFEST" \
-        TARGET_HARNESS_ROOT="$TARGET_HARNESS_ROOT" \
-            python3 <<'PY'
-import json
-import os
-from pathlib import Path
-
-manifest = json.loads(
-    Path(os.environ["RESOURCE_MANIFEST"]).read_text(encoding="utf-8")
-)
-target_root = Path(os.environ["TARGET_HARNESS_ROOT"]).expanduser()
-for kind in ("skills", "prompts"):
-    for entry in manifest[kind]:
-        print(target_root / kind / entry["name"])
-PY
-    )" || fail "Could not read the resource manifest."
-
     local resource_target
     while IFS= read -r resource_target; do
         [[ -n "$resource_target" ]] || continue
@@ -251,7 +301,7 @@ clean_settings() {
     ensure_backup_dir
     if ((DRY_RUN)); then
         run cp -a "$SETTINGS_FILE" "$BACKUP_DIR/settings.json"
-    else
+    elif ! path_exists "$BACKUP_DIR/settings.json"; then
         cp -a "$SETTINGS_FILE" "$BACKUP_DIR/settings.json"
         info "Pi settings backup:"
         info "  $BACKUP_DIR/settings.json"
@@ -266,6 +316,7 @@ clean_settings() {
     SETTINGS_FILE="$SETTINGS_FILE" \
     HARNESS_ROOT="$HARNESS_ROOT" \
     RESOURCE_MANIFEST="$RESOURCE_MANIFEST" \
+    SETTINGS_DEFAULTS_FILE="$SETTINGS_DEFAULTS_FILE" \
     TARGET_HARNESS_ROOT="$TARGET_HARNESS_ROOT" \
         python3 <<'PY'
 import json
@@ -279,6 +330,9 @@ root = Path(os.environ["HARNESS_ROOT"]).resolve()
 manifest = json.loads(
     Path(os.environ["RESOURCE_MANIFEST"]).read_text(encoding="utf-8")
 )
+defaults = json.loads(
+    Path(os.environ["SETTINGS_DEFAULTS_FILE"]).read_text(encoding="utf-8")
+)["settings"]
 target_root = Path(os.environ["TARGET_HARNESS_ROOT"]).expanduser()
 
 try:
@@ -308,6 +362,11 @@ for kind in ("skills", "prompts"):
         settings[kind] = kept
     else:
         settings.pop(kind, None)
+
+for kind, value in defaults.items():
+    if settings.get(kind) == value:
+        settings.pop(kind)
+        removed.append(f"{kind} (harness default)")
 
 with tempfile.NamedTemporaryFile(
     mode="w",
@@ -394,9 +453,11 @@ PY
         return 0
     fi
 
-    cp -a "$TARGET_MCP_FILE" "$BACKUP_DIR/mcp.json"
-    info "Pi MCP configuration backup:"
-    info "  $BACKUP_DIR/mcp.json"
+    if ! path_exists "$BACKUP_DIR/mcp.json"; then
+        cp -a "$TARGET_MCP_FILE" "$BACKUP_DIR/mcp.json"
+        info "Pi MCP configuration backup:"
+        info "  $BACKUP_DIR/mcp.json"
+    fi
 
     TARGET_MCP_FILE="$TARGET_MCP_FILE" \
     REMOVE_SERVERS="$(printf '%s\n' "${to_remove[@]}")" \
@@ -470,13 +531,25 @@ main() {
         fail "Pi agent directory does not exist: $PI_AGENT_DIR"
     [[ -f "$RESOURCE_MANIFEST" ]] ||
         fail "Missing resource manifest: $RESOURCE_MANIFEST"
+    [[ -f "$SETTINGS_DEFAULTS_FILE" ]] ||
+        fail "Missing settings defaults manifest: $SETTINGS_DEFAULTS_FILE"
     [[ -f "$REQUIRED_MCP_FILE" ]] ||
         fail "Missing required MCP manifest: $REQUIRED_MCP_FILE"
+    [[ -f "$MANAGED_STATE_HELPER" ]] ||
+        fail "Missing managed-state helper: $MANAGED_STATE_HELPER"
 
-    remove_managed_links
-    remove_permission_copies
-    clean_settings
-    clean_required_mcp
+    load_resource_targets
+    preflight_uninstall
+
+    local receipt_present=0
+    path_exists "$TARGET_HARNESS_ROOT/.managed-state.json" && receipt_present=1
+    apply_receipt_uninstall
+    if ((receipt_present == 0)); then
+        remove_managed_links
+        remove_permission_copies
+        clean_settings
+        clean_required_mcp
+    fi
     remove_empty_managed_directories
     print_summary
 }

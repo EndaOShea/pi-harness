@@ -1,3 +1,7 @@
 __pycache__/
 *.py[cod]
 .playwright-mcp/
+.pi-subagents/
+.worktrees/
+node_modules/
+package-lock.json

@@ -11,8 +11,14 @@ permissions:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    env:
+      HARNESS_REQUIRE_POLICY_INTEGRATION: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,6 +27,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - name: Install exact Pi runtime and permission integration
+        run: |
+          npm install --global @earendil-works/pi-coding-agent@0.84.1
+          pi install npm:@thurstonsand/pi-permissions@0.9.0
+      - name: Install exact type-checking toolchain
+        run: npm install --global typescript@5.7.2 @types/node@24.13.3
+      - name: Install ShellCheck on macOS
+        if: runner.os == 'macOS'
+        run: command -v shellcheck >/dev/null || brew install shellcheck
       - name: Validate repository and isolated installer
         run: ./scripts/validate.sh
 

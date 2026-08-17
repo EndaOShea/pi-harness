@@ -11,7 +11,13 @@ const approvalGuidance =
   "after reviewing the exact command, resolved targets, tracking status, and " +
   "recovery path. Approval applies only to this tool call.";
 
-const requestForCommands = ({ commands }: { commands: SimpleCommand[] }) =>
+// `commands` is readonly on the API's CommandMatch; annotating it mutable
+// type-checked only because nothing here writes to it.
+const requestForCommands = ({
+  commands,
+}: {
+  commands: readonly SimpleCommand[];
+}) =>
   request({
     guidance: approvalGuidance,
     highlight: commands.map((command) => command.span),

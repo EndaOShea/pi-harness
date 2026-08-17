@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 
 import {
   matchTool,
@@ -7,8 +8,12 @@ import {
 } from "@thurstonsand/pi-permissions";
 
 import {
+  findCredentialSearchRoot,
+  findEnvironmentExposureCommands,
   findProtectedDirectory,
   findSecretPathReferences,
+  findSensitiveRegistryReferences,
+  findShellPathCandidates,
   isSecretFile,
 } from "./lib/path-matchers.js";
 import { resolvePhysicalPath } from "./lib/resolve-path.js";
@@ -55,7 +60,8 @@ export default function permissions(api: PermissionsAPI) {
     description:
       "Require per-call approval for file-tool writes into protected " +
       "directories, reads of secret-shaped files, and shell commands " +
-      "referencing secret paths.",
+      "referencing secret paths, sensitive Windows Registry keys, or " +
+      "environment values.",
 
     handler(input) {
       return matchTool(input.tool, {
@@ -81,14 +87,38 @@ export default function permissions(api: PermissionsAPI) {
           });
         },
         bash(tool) {
-          const findings = findSecretPathReferences(tool.command, HOME);
-          if (findings.length === 0) {
+          const pathFindings = findSecretPathReferences(tool.command, HOME);
+          const registryFindings = findSensitiveRegistryReferences(tool.command);
+          const environmentFindings = findEnvironmentExposureCommands(tool.command);
+          const shellCandidates = findShellPathCandidates(tool.command, HOME);
+          const resolvedFindings = shellCandidates.flatMap((candidate) => {
+            const lexical = resolve(input.cwd ?? process.cwd(), candidate.path);
+            const physical = resolvePhysicalPath(lexical);
+            const rule = isSecretFile(physical, HOME);
+            const searchRoot = candidate.contentSearch
+              ? findCredentialSearchRoot(physical, HOME)
+              : null;
+            return rule || searchRoot
+              ? [{ token: candidate.token, rule: rule ?? searchRoot! }]
+              : [];
+          });
+          if (
+            pathFindings.length === 0 &&
+            registryFindings.length === 0 &&
+            environmentFindings.length === 0 &&
+            resolvedFindings.length === 0
+          ) {
             return undefined;
           }
-          const rules = [...new Set(findings.map((f) => f.rule))].join(", ");
+          const rules = [...new Set([
+            ...pathFindings.map((finding) => finding.rule),
+            ...registryFindings.map((finding) => finding.rule),
+            ...environmentFindings.map((finding) => finding.reason),
+            ...resolvedFindings.map((finding) => finding.rule),
+          ])].join(", ");
           return request({
             guidance:
-              `This command references secret material (${rules}). Its ` +
+              `This command references or exposes secret material (${rules}). Its ` +
               "output will enter model context and be transmitted to the " +
               "model provider. Approval applies only to this tool call.",
             approveLabel: "Approve command",
@@ -101,18 +131,14 @@ export default function permissions(api: PermissionsAPI) {
             return undefined;
           }
           const resolved = resolvePhysicalPath(tool.absolutePath);
-          const directory = findProtectedDirectory(
-            resolved,
-            HOME,
-            PROTECTED_DIRECTORIES,
-          );
           const rule = isSecretFile(resolved, HOME);
-          if (!directory && !rule) {
+          const searchRoot = findCredentialSearchRoot(resolved, HOME);
+          if (!rule && !searchRoot) {
             return undefined;
           }
           return request({
             guidance:
-              `This search targets ${rule ?? directory} and returns matching ` +
+              `This search targets ${rule ?? searchRoot} and returns matching ` +
               "file contents into model context. Approval applies only to " +
               "this tool call.",
             approveLabel: "Approve search",

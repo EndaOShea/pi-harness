@@ -13,13 +13,21 @@ declarations are an example payload you are expected to replace. See
 
 ## Project status
 
-Version `0.1.0-rc.6` is a deployment candidate. The installer and uninstaller
+Version `0.1.0-rc.7` is a deployment candidate. The installer and uninstaller
 are covered by isolated tests for non-mutating dry runs, fresh installation,
 idempotent reruns, backup preservation, invalid-settings preflight failure,
 required MCP merging, uninstall ownership checks, and third-party provenance
 checks. Run the validation suite before deploying a checkout.
 
-No release tag or global installation is created automatically.
+No release tag or global installation is created automatically. Native host
+support for installation and workspace enforcement is Linux and macOS.
+Windows secret-path and Registry strings are defensively recognized by the
+lexical matchers, but native Windows installation and workspace enforcement
+are unsupported.
+
+Installation gates on a minimum Pi version declared as `MINIMUM_PI_VERSION`
+in `scripts/install.sh`; the check runs before any package is fetched and
+reports the upgrade command.
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the complete first-install,
 update, verification, backup, and rollback procedure.
@@ -43,7 +51,9 @@ package reference is an exact version or an immutable commit.
 | Parallel work | Subagent dispatch for independent tasks | `pi-subagents` |
 | Local models | Session-start discovery of Ollama and LM Studio servers | `extensions/local-models.ts` |
 | Usage accounting | Token and cost reporting | `@narumitw/pi-usage` |
-| Approval hooks | Per-call confirmation for deletion and protected-path operations | `permissions/` |
+| Rate-limit telemetry and governor | `/tpm` command, per-request rate-limit capture, shared usage log, pre-send holds against the token budget | `extensions/tpm-telemetry.ts` |
+| Context budget | Trims oversized bash/grep/find/ls results before they enter context | `extensions/context-budget.ts` |
+| Approval hooks | Per-call confirmation for deletion, workspace escapes, secret reads/searches, and outbound transmission | `permissions/` |
 
 The machinery in this table is generic; the specific skills, packages, and MCP
 declarations are an example payload. See
@@ -149,12 +159,19 @@ Restart Pi, then confirm the result with `pi config`, `/permissions`, and
 - `config/resources.json` is the allowlist of globally exposed skills and
   prompt directories.
 - `config/required-mcp.json` declares MCP servers required in every Pi setup.
+- `config/settings-defaults.json` declares the retry policy merged into Pi
+  settings on install; `config/models-defaults.json` declares per-model
+  input limits merged into Pi models on install. Both are payload: retune
+  them for the models and provider tier your fork actually uses.
 - `skills/` contains shared and model-specific agent skills.
 - `.pi/skills/impeccable/` contains the vendored Impeccable frontend workflow
   and is explicitly exposed by the resource manifest.
 - `permissions/` contains the global deletion-approval hook and its matcher.
-- `extensions/` contains harness-managed Pi extensions, currently the
-  local model provider discovery for Ollama and LM Studio.
+- `extensions/` contains harness-managed Pi extensions: local model provider
+  discovery for Ollama and LM Studio (`extensions/local-models.ts`),
+  rate-limit telemetry and the TPM governor behind `/tpm`
+  (`extensions/tpm-telemetry.ts`), and the context budget guard
+  (`extensions/context-budget.ts`).
 - `mcp/` contains optional MCP examples and operating guidance, including a
   disabled Playwright browser-automation application.
 - `config/third-party-skills.json` records third-party provenance and hashes.
@@ -173,6 +190,8 @@ Requirements:
 - Node.js 18 or newer for permission matcher validation (22.6 or newer also
   parse-checks the TypeScript policy module);
 - ShellCheck, optionally, for static shell analysis (always runs in CI);
+- TypeScript and `@types/node`, optionally, for type checking (always runs
+  in CI; see [Type checking](#type-checking));
 - Pi only when package installation is not skipped.
 
 The harness's Python tooling — tests and the Impeccable checker — is
@@ -188,6 +207,33 @@ Run all repository and isolated installer checks:
 
 The tests create isolated fixtures under `/tmp`; passing tests remove their
 fixtures, and failing tests preserve them for post-failure inspection.
+
+### Type checking
+
+`scripts/typecheck.sh` runs as part of `validate.sh` and type-checks
+`permissions/` and `extensions/` against the real upstream declarations. The
+test suite parse-checks those modules with `node --check`, which cannot see
+that a handler's parameter no longer matches the shape
+`@thurstonsand/pi-permissions` declares, or that an extension reads a field
+Pi stopped emitting; both load fine and fail at runtime.
+
+`tsconfig.json` holds the reviewed compiler options and file set. It
+deliberately declares no module paths: `@thurstonsand/pi-permissions` is
+installed by `pi install` into `$PI_AGENT_DIR/npm/node_modules`, ships raw
+`.ts` source as its types, and names `@earendil-works/pi-coding-agent` as a
+peer that must therefore resolve too. Neither location is knowable at commit
+time, so the script discovers both and generates a throwaway overlay that
+extends the committed configuration.
+
+Like ShellCheck, the toolchain is optional locally and mandatory in CI. When
+`tsc`, `@types/node`, or either upstream package is missing, the script
+reports the omission and exits `127`; `validate.sh` treats that as a skip
+unless `HARNESS_REQUIRE_POLICY_INTEGRATION=1`, and a genuine type error
+always fails. To enable it locally:
+
+```bash
+npm install --no-save typescript @types/node   # ignored by Git
+```
 
 ## Preview deployment
 
@@ -248,7 +294,18 @@ The installer:
 4. merges the required Context7 server into Pi's global MCP override;
 5. appends stable resource paths to `settings.json` atomically;
 6. preserves displaced resources under a unique timestamped backup directory;
-7. validates every installed link, MCP entry, and registered resource path.
+7. validates every installed link, MCP entry, and registered resource path;
+8. writes `$PI_AGENT_DIR/harness/.managed-state.json` atomically with mode
+   `0600` after successful validation.
+
+The schema-versioned receipt records the harness root and version, Pi agent
+directory, owned link sources and targets, permission-copy SHA-256 hashes,
+managed setting values, public required MCP definitions, and package pins. It
+never records secrets, private MCP headers or environment values, or
+unrelated user-owned settings. On update, stale receipt entries are removed
+only when ownership still matches, so a value the user tuned is preserved
+while a harness-owned default can be retuned. A removed package pin is
+reported but requires manual `pi` package management.
 
 During migration it removes only the two legacy harness-managed forms from the
 relevant settings arrays: the repository's former top-level `skills`/`prompts`
@@ -386,10 +443,13 @@ inspect the complete diff.
 ├── packages/pi-packages.txt        Pinned Pi packages
 ├── permissions/                    Global permission policy
 ├── scripts/install.sh              Global installer
+├── scripts/lib/managed_state.py    Managed-state receipt and reconciliation
+├── scripts/typecheck.sh            TypeScript type-check runner
 ├── scripts/uninstall.sh            Ownership-checked uninstaller
 ├── scripts/validate.sh             Validation entry point
 ├── skills/                         Harness-managed skills
-└── tests/                          Isolated installer/repository tests
+├── tests/                          Isolated installer/repository tests
+└── tsconfig.json                   Reviewed type-check configuration
 ```
 
 `tests/fixtures/eval/` holds a deliberately hostile page that is fetched over
