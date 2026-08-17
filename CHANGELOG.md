@@ -3,8 +3,41 @@
 All notable harness changes are recorded here. The project does not create a
 release tag automatically; tagging remains an explicit maintainer action.
 
-## Unreleased
+## 0.1.0-rc.7 - 2026-08-17
 
+- added a schema-versioned managed-state receipt
+  (`$PI_AGENT_DIR/harness/.managed-state.json`, mode `0600`) and
+  `scripts/lib/managed_state.py`. Install and uninstall now act only on
+  state this checkout can prove it owns — exact link targets, permission
+  hashes, setting values, MCP definitions — so a harness default can be
+  retuned across existing installations while anything the operator changed
+  is preserved with a warning. A removed package pin is reported rather
+  than silently uninstalled;
+- added TypeScript type checking (`tsconfig.json`, `scripts/typecheck.sh`),
+  wired into `validate.sh` and mandatory in CI. `node --check` only parses;
+  it cannot see that a handler's parameter no longer matches the shape
+  `@thurstonsand/pi-permissions` declares. Module resolution is generated
+  rather than committed, because pi-permissions is installed into
+  `$PI_AGENT_DIR/npm/node_modules`, ships raw `.ts` as its types, and needs
+  its `@earendil-works/pi-coding-agent` peer resolved too. An absent
+  toolchain exits 127: a skip locally, an error under
+  `HARNESS_REQUIRE_POLICY_INTEGRATION=1`;
+- added rate-limit telemetry and a TPM governor
+  (`extensions/tpm-telemetry.ts`) behind a `/tpm` command, plus a context
+  budget guard (`extensions/context-budget.ts`). Breaches come from request
+  rate rather than request size, so the governor holds an outbound request
+  when the provider's own reported budget cannot cover it, claiming its
+  estimated cost before sending so concurrent Pi processes see each other.
+  Fail-open throughout: absent evidence reads as a full bucket, holds are
+  bounded, aborts cut them short, and any internal error passes the request
+  through unmodified;
+- added `config/settings-defaults.json` (retry policy, with provider-level
+  SDK retries declared at zero) and `config/models-defaults.json` (per-model
+  `contextWindow`), merged at install time. Both are payload — retune them
+  for the models and provider tier your fork uses;
+- taught `extensions/local-models.ts` to probe each discovered Ollama and
+  LM Studio model's real context length instead of registering every model
+  at a fixed placeholder;
 - gated installation on a minimum Pi version (`MINIMUM_PI_VERSION` in
   `scripts/install.sh`, currently `0.84.1`). Three pinned packages import
   `@earendil-works/pi-ai/compat`, a subpath that first appears in
@@ -45,6 +78,7 @@ release tag automatically; tagging remains an explicit maintainer action.
   ShellCheck rather than skipping static analysis. CI installs the exact
   Pi runtime and pinned permissions package so the policies are exercised
   against the real library instead of being silently skipped;
+- upgraded the required web research extension to `pi-web-access@0.19.0`,
   retaining exact package pinning while gaining its stricter remote-fetch
   routing, grounded answer mode, raw fetch mode, and bounded content search;
 - added a disabled, optional Playwright MCP application template pinned to

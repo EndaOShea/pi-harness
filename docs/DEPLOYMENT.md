@@ -119,8 +119,30 @@ Before mutation, the installer validates its manifests and any existing
 4. adds Pi-only exact exclusions for duplicate native optimizer copies without
    removing their parent Codex or Claude skill paths;
 5. merges the required lazy Context7 server into `mcp.json` unless skipped;
-6. validates the installed links, JSON, resource registrations, and required
-   MCP entries.
+6. applies the declared retry policy from `config/settings-defaults.json` to
+   `settings.json`, and the declared per-model input limits from
+   `config/models-defaults.json` to `models.json`. A missing key is merged
+   verbatim; an existing key with a different value fails preflight before
+   any mutation rather than overwriting your configuration;
+7. validates the installed links, JSON, resource registrations, and required
+   MCP entries;
+8. writes `$PI_AGENT_DIR/harness/.managed-state.json` atomically with mode
+   `0600` after successful validation.
+
+### The managed-state receipt
+
+The schema-versioned receipt is what makes updates and uninstalls safe. It
+records the harness root and version, the Pi agent directory, owned link
+sources and targets, permission-copy SHA-256 hashes, managed setting values,
+public required MCP definitions, and package pins. It never records secrets,
+private MCP headers or environment values, or unrelated user-owned settings.
+
+On update, a managed value that still matches the receipt is recognized as
+harness-owned and may be replaced, so a retuned default reaches existing
+installations; anything else was tuned by the operator and is preserved.
+Owned stale files and edited configuration move to the timestamped backup,
+while modified or foreign state stays in place with a warning. A removed
+package pin is reported but requires manual `pi` package management.
 
 Unrelated settings and MCP servers are preserved. Existing private fields on
 the compatible Context7 definition, such as authentication headers, are also
@@ -212,7 +234,7 @@ never deletes newer state or old backups automatically.
 
 ## Release readiness
 
-Version `0.1.0-rc.6` is a deployment candidate. The repository validation,
+Version `0.1.0-rc.7` is a deployment candidate. The repository validation,
 isolated installer and uninstaller tests, and CI workflow are in place. A
 public release still requires an explicit maintainer decision to create a tag
 and publish release notes. A real current-user installation and any production

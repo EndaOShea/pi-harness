@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -16,6 +19,19 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install.sh"
 UNINSTALLER = ROOT / "scripts" / "uninstall.sh"
+RESOURCES = ROOT / "config" / "resources.json"
+PACKAGE_MANIFEST = ROOT / "packages" / "pi-packages.txt"
+REQUIRED_MCP = ROOT / "config" / "required-mcp.json"
+OPTIONAL_PLAYWRIGHT = ROOT / "mcp" / "playwright.optional.example.json"
+IMPECCABLE_CHECKER = ROOT / "scripts" / "check-impeccable.py"
+VERSION_FILE = ROOT / "VERSION"
+MANAGED_STATE_PATH = ROOT / "scripts" / "lib" / "managed_state.py"
+MANAGED_STATE_SPEC = importlib.util.spec_from_file_location(
+    "managed_state", MANAGED_STATE_PATH
+)
+assert MANAGED_STATE_SPEC is not None and MANAGED_STATE_SPEC.loader is not None
+managed_state = importlib.util.module_from_spec(MANAGED_STATE_SPEC)
+MANAGED_STATE_SPEC.loader.exec_module(managed_state)
 
 
 def minimum_pi_version() -> str:
@@ -27,20 +43,6 @@ def minimum_pi_version() -> str:
     )
     assert match is not None, "MINIMUM_PI_VERSION missing from install.sh"
     return match.group(1)
-
-# Strings that must never appear in tracked files: private hostnames, IP
-# addresses, and internal service names. Forks should replace the placeholder
-# with their own real markers (see docs/FORKING.md); the placeholder keeps the
-# guard exercised without publishing anything private.
-PRIVATE_REFERENCE_MARKERS: tuple[str, ...] = (
-    "REPLACE-WITH-YOUR-PRIVATE-HOSTNAME.example",
-)
-RESOURCES = ROOT / "config" / "resources.json"
-PACKAGE_MANIFEST = ROOT / "packages" / "pi-packages.txt"
-REQUIRED_MCP = ROOT / "config" / "required-mcp.json"
-OPTIONAL_PLAYWRIGHT = ROOT / "mcp" / "playwright.optional.example.json"
-IMPECCABLE_CHECKER = ROOT / "scripts" / "check-impeccable.py"
-VERSION_FILE = ROOT / "VERSION"
 
 PI_AGENT_NPM_DIR = Path(
     os.environ.get("PI_AGENT_NPM_DIR", str(Path.home() / ".pi" / "agent" / "npm"))
@@ -185,6 +187,61 @@ def harness_documents() -> list[Path]:
     documents.extend(sorted((ROOT / "docs").glob("*.md")))
     documents.extend(sorted((ROOT / "mcp").glob("*.md")))
     return documents
+
+
+NATIVE_WINDOWS_SUPPORT_CLAIMS = (
+    r"\bnative Windows (?:installation|install|support|hosts?) (?:is |are )?supported\b",
+    r"\bsupports? native Windows\b",
+    r"\binstall(?:ation|ing)? (?:the harness )?(?:natively )?on Windows\b",
+    r"\bWindows (?:is|are) (?:an? )?supported native hosts?\b",
+    r"\b(?:the )?harness (?:works?|runs?) natively on Windows\b",
+    r"\bnative Windows (?:installation|workspace enforcement)"
+    r"(?: (?:and|or) (?:installation|workspace enforcement))? "
+    r"(?:is|are) supported\b",
+    r"\bRequire per-call approval\b[^.\n]*\bon Linux, macOS, or Windows\b",
+)
+
+
+def assert_native_windows_documentation_contract(
+    testcase: unittest.TestCase, documents: str
+) -> None:
+    testcase.assertRegex(
+        documents,
+        re.compile(r"\bnative Linux and macOS enforcement\b", re.IGNORECASE),
+    )
+    testcase.assertRegex(
+        documents,
+        re.compile(
+            r"\bdefensiv\w*\b[^.\n]*\blexical Windows\b"
+            r"[^.\n]*\bcredential paths?\b[^.\n]*\bRegistry\b",
+            re.IGNORECASE,
+        ),
+    )
+    testcase.assertRegex(
+        documents,
+        re.compile(
+            r"\b(?:native Windows installation and workspace enforcement "
+            r"are unsupported|without claiming native Windows installation "
+            r"or workspace enforcement)\b",
+            re.IGNORECASE,
+        ),
+    )
+    for claim in NATIVE_WINDOWS_SUPPORT_CLAIMS:
+        testcase.assertNotRegex(documents, re.compile(claim, re.IGNORECASE))
+
+
+def cross_platform_goal(document: str) -> str:
+    plan_goal = re.search(r"^\*\*Goal:\*\*\s*(.+)$", document, re.MULTILINE)
+    if plan_goal:
+        return plan_goal.group(1)
+    spec_goal = re.search(
+        r"^## Goal\s*\n\s*(.+?)(?=\n\s*\n)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    if spec_goal:
+        return " ".join(spec_goal.group(1).splitlines())
+    raise AssertionError("cross-platform document is missing its Goal")
 
 
 def read_frontmatter(path: Path) -> dict[str, str]:
@@ -411,6 +468,13 @@ def assert_validate_job_workflow(
         step_commands,
         "validate job must execute both exact install commands in one step",
     )
+    testcase.assertIn(
+        ["npm install --global typescript@5.7.2 @types/node@24.13.3"],
+        step_commands,
+        "validate job must install the pinned type-checking toolchain, "
+        "without which scripts/typecheck.sh reports 127 and strict "
+        "validation fails",
+    )
     shellcheck_steps = [
         step
         for step in steps
@@ -429,7 +493,6 @@ def assert_validate_job_workflow(
         step_commands,
         "validate job must execute scripts/validate.sh",
     )
-
 
 
 class RepositoryValidationTests(unittest.TestCase):
@@ -500,6 +563,86 @@ class RepositoryValidationTests(unittest.TestCase):
         )
         self.assertNotIn("Ran ", result.stdout)
 
+    def test_typecheck_configuration_is_sound(self) -> None:
+        """The committed tsconfig must actually check, and check strictly.
+
+        `node --check` in test_typescript_permission_policy_parses only
+        parses. Type checking is what catches a handler whose parameter no
+        longer matches the shape the permissions API declares — a real
+        instance of which shipped until tsc was first run against it."""
+        config = json.loads((ROOT / "tsconfig.json").read_text(encoding="utf-8"))
+        options = config["compilerOptions"]
+        self.assertTrue(options["strict"], "type checking must be strict")
+        self.assertTrue(options["noEmit"], "the harness never builds output")
+        # The matchers are plain JS, exercised through Node by this suite.
+        self.assertFalse(options["checkJs"])
+        self.assertEqual(options["types"], ["node"])
+        self.assertEqual(
+            sorted(config["include"]),
+            ["extensions/**/*.ts", "permissions/**/*.ts"],
+            "both TypeScript trees must be covered",
+        )
+        script = ROOT / "scripts" / "typecheck.sh"
+        self.assertTrue(script.is_file(), script)
+        self.assertTrue(os.access(script, os.X_OK), f"{script} must be executable")
+
+    def test_typecheck_reports_absent_toolchain_without_failing(self) -> None:
+        """A missing toolchain is 127, distinct from a type error's 1.
+
+        validate.sh relies on that distinction to skip locally and fail in
+        CI. Run from an isolated copy so a maintainer's local
+        `npm install --no-save typescript` cannot satisfy the lookup and
+        mask the skip path."""
+        fixture = retained_on_failure_tmpdir(self, "typecheck-toolchain-")
+        (fixture / "scripts").mkdir()
+        shutil.copy2(ROOT / "scripts" / "typecheck.sh", fixture / "scripts")
+        shutil.copy2(ROOT / "tsconfig.json", fixture / "tsconfig.json")
+
+        bin_dir = fixture / "bin"
+        bin_dir.mkdir()
+        for command in ("bash", "dirname", "mktemp", "rm"):
+            executable = shutil.which(command)
+            self.assertIsNotNone(executable, command)
+            (bin_dir / command).symlink_to(executable)
+
+        env = os.environ.copy()
+        env.update({
+            "PATH": str(bin_dir),
+            "PI_AGENT_DIR": str(fixture / "absent-agent-dir"),
+        })
+        result = subprocess.run(
+            [str(fixture / "scripts" / "typecheck.sh")],
+            cwd=fixture,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 127, result.stdout)
+        self.assertIn("type checking skipped", result.stdout)
+
+    def test_validation_gates_type_checking_in_strict_mode(self) -> None:
+        """An absent toolchain must not silently pass CI.
+
+        Verified structurally: exercising it would require a machine with no
+        resolvable tsc, which is exactly the machine CI is configured not to
+        be."""
+        validate = (ROOT / "scripts" / "validate.sh").read_text(encoding="utf-8")
+        self.assertIn('"$HARNESS_ROOT/scripts/typecheck.sh" || TYPECHECK_STATUS=$?', validate)
+        self.assertIn("((TYPECHECK_STATUS == 127))", validate)
+        self.assertIn(
+            "ERROR: TypeScript type checking is required in strict CI validation.",
+            validate,
+        )
+        self.assertIn("((TYPECHECK_STATUS != 0))", validate)
+        # A type error must fail even outside strict mode, and must do so
+        # before the suite runs rather than after it.
+        self.assertLess(
+            validate.index("TYPECHECK_STATUS"),
+            validate.index("python3 -m unittest"),
+        )
+
     def test_ci_workflow_validator_rejects_behavior_breaking_mutations(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(
             encoding="utf-8"
@@ -560,6 +703,13 @@ class RepositoryValidationTests(unittest.TestCase):
                 "        # run: ./scripts/validate.sh\n",
                 1,
             ),
+            "type-checking toolchain install commented out": workflow.replace(
+                "        run: npm install --global typescript@5.7.2 "
+                "@types/node@24.13.3\n",
+                "        # run: npm install --global typescript@5.7.2 "
+                "@types/node@24.13.3\n",
+                1,
+            ),
         }
 
         for mutation, mutated_workflow in mutations.items():
@@ -567,6 +717,847 @@ class RepositoryValidationTests(unittest.TestCase):
                 self.assertNotEqual(mutated_workflow, workflow)
                 with self.assertRaises(AssertionError):
                     assert_validate_job_workflow(self, mutated_workflow)
+
+    def test_settings_defaults_manifest_is_sound(self) -> None:
+        manifest = json.loads(
+            (ROOT / "config" / "settings-defaults.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["schemaVersion"], 1)
+        settings = manifest["settings"]
+        self.assertEqual(set(settings), {"retry"})
+        retry = settings["retry"]
+        self.assertTrue(retry["enabled"])
+        self.assertGreaterEqual(retry["maxRetries"], 2)
+        self.assertGreaterEqual(retry["baseDelayMs"], 1000)
+        # Provider-level SDK retries must stay off: they retry usage-limit
+        # errors inside the provider client, where the agent cannot see or
+        # bound them, and can block until a quota resets. Zero is also Pi's
+        # current default, but declaring it keeps the guarantee ours rather
+        # than inheriting whatever a future Pi release defaults to.
+        # Only `maxRetries` belongs here: `maxRetryDelayMs` is the threshold
+        # above which a server-requested delay fails fast, and it is never
+        # consulted while the retry loop runs zero times.
+        self.assertEqual(retry["provider"], {"maxRetries": 0})
+
+    def test_model_defaults_bound_input_only(self) -> None:
+        """`contextWindow` remains as a backstop; `maxTokens` is gone.
+
+        Rate limiting is the governor's job: capping output could never stop
+        a breach, because breaches come from many requests inside one minute,
+        not from one oversized request. What a cap still buys is the one case
+        the governor cannot rescue — a request larger than the entire bucket,
+        which no amount of waiting makes fit. So the input side keeps its
+        bound and the output side does not."""
+        manifest = json.loads(
+            (ROOT / "config" / "models-defaults.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["schemaVersion"], 1)
+        models = manifest["models"]
+        for provider in ("openai", "openai-codex"):
+            overrides = models[provider]
+            for model in ("gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+                          "gpt-5.4", "gpt-5.4-mini"):
+                self.assertEqual(overrides[model]["contextWindow"], 100000)
+                self.assertNotIn("maxTokens", overrides[model])
+        retry = json.loads(
+            (ROOT / "config" / "settings-defaults.json").read_text(encoding="utf-8")
+        )["settings"]["retry"]
+        self.assertEqual(retry["maxRetries"], 8)
+        self.assertEqual(retry["baseDelayMs"], 2000)
+        # Pi computes baseDelayMs * 2 ** (attempt - 1) with no ceiling, so
+        # attempts and base must be chosen together. Total backoff across
+        # every attempt must stay inside a few minutes: a subagent that
+        # survives a squeeze is the point, but one parked for an hour is
+        # worse than one that failed fast.
+        total_backoff_ms = sum(
+            retry["baseDelayMs"] * 2 ** attempt for attempt in range(retry["maxRetries"])
+        )
+        self.assertLess(total_backoff_ms, 600_000)
+        self.assertGreater(total_backoff_ms, 120_000)
+
+    def test_rate_limit_telemetry_extension_present(self) -> None:
+        path = ROOT / "extensions" / "tpm-telemetry.ts"
+        source = path.read_text(encoding="utf-8")
+        self.assertTrue(path.is_file())
+        for marker in (
+            "after_provider_response",
+            "before_provider_request",
+            "registerCommand",
+            '"tpm"',
+            "retry-after",
+            "harness",
+            "telemetry",
+        ):
+            self.assertIn(marker, source)
+        # The governor throttles; it must never rewrite what the agent asked
+        # for. Returning a payload from the pre-send handler would replace
+        # the request, so nothing here may hand one back.
+        self.assertNotIn("return payload", source)
+        self.assertNotIn("currentPayload", source)
+        # It must stay fail-open: bounded holds, interruptible, disableable.
+        self.assertIn("PI_TPM_GOVERNOR", source)
+        self.assertIn("maxWaitMs", source)
+        self.assertIn("ctx.signal", source)
+        # The shared log must never record credentials or payload content.
+        self.assertNotIn("event.payload", source)
+        self.assertNotIn("apiKey", source)
+
+    def test_telemetry_attributes_provider_and_model(self) -> None:
+        """Records must name the provider and model behind each response.
+
+        The shared log mixes every provider a session touches, so an
+        unattributed record cannot be counted against OpenAI's 200000 TPM
+        budget. Malformed shapes must degrade to null rather than leak
+        objects into the log."""
+        script = """
+import { describeModel } from './extensions/tpm-telemetry.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+let d = describeModel({
+  id: 'gpt-5.4', provider: 'openai', contextWindow: 100000, maxTokens: 50000,
+});
+assert(d.provider === 'openai', 'provider read, got ' + JSON.stringify(d));
+assert(d.model === 'gpt-5.4', 'model id read, got ' + JSON.stringify(d));
+// No active model is normal (startup, non-model turns), not an error.
+d = describeModel(undefined);
+assert(d.provider === null && d.model === null, 'undefined degrades to nulls');
+d = describeModel(null);
+assert(d.provider === null && d.model === null, 'null degrades to nulls');
+// Non-string fields must not reach the log as objects.
+d = describeModel({ id: 42, provider: { name: 'openai' } });
+assert(d.provider === null && d.model === null, 'non-strings degrade, got ' + JSON.stringify(d));
+d = describeModel('openai/gpt-5.4');
+assert(d.provider === null && d.model === null, 'non-object degrades to nulls');
+// Blank strings carry no attribution and must not read as a provider.
+d = describeModel({ id: '  ', provider: '' });
+assert(d.provider === null && d.model === null, 'blank strings degrade, got ' + JSON.stringify(d));
+// A model present without a provider still attributes what it can.
+d = describeModel({ id: 'gpt-5.4' });
+assert(d.provider === null && d.model === 'gpt-5.4', 'partial attribution, got ' + JSON.stringify(d));
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_telemetry_record_carries_attribution_and_headers(self) -> None:
+        """The appended record composes status, retry-after, rate-limit
+        headers and provider/model attribution. Attribution must survive
+        into the record itself: a describeModel that nothing calls would
+        leave the log exactly as unattributable as before."""
+        script = """
+import { buildRecord } from './extensions/tpm-telemetry.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const record = buildRecord({
+  ts: 1786870340496,
+  pid: 4242,
+  status: 429,
+  headers: {
+    'retry-after': '12',
+    'X-RateLimit-Remaining-Tokens': '9795',
+    'x-ratelimit-limit-tokens': '200000',
+    'authorization': 'Bearer sk-secret',
+  },
+  contextTokens: 81502,
+  model: { id: 'gpt-5.4', provider: 'openai' },
+});
+assert(record.provider === 'openai', 'provider attributed, got ' + JSON.stringify(record));
+assert(record.model === 'gpt-5.4', 'model attributed, got ' + JSON.stringify(record));
+assert(record.status === 429, 'status carried');
+assert(record.pid === 4242, 'pid carried');
+assert(record.contextTokens === 81502, 'context tokens carried');
+assert(record.retryAfterMs === 12000, 'retry-after seconds to ms, got ' + record.retryAfterMs);
+assert(record.rateLimit['x-ratelimit-remaining-tokens'] === '9795', 'header lowercased');
+assert(record.rateLimit['x-ratelimit-limit-tokens'] === '200000', 'limit captured');
+// Only x-ratelimit-* headers are logged; credentials must never be.
+assert(JSON.stringify(record).indexOf('sk-secret') === -1, 'no credential leak');
+assert(record.rateLimit.authorization === undefined, 'authorization not captured');
+// A 200 with no rate-limit headers still yields a well-formed record.
+const bare = buildRecord({
+  ts: 1, pid: 2, status: 200, headers: {}, contextTokens: null, model: undefined,
+});
+assert(bare.rateLimit === null, 'absent headers give null');
+assert(bare.retryAfterMs === null, 'absent retry-after gives null');
+assert(bare.provider === null && bare.model === null, 'absent model gives nulls');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_governor_decides_wait_from_bucket_level(self) -> None:
+        """The wait decision, given a bucket level and a request's cost.
+
+        OpenAI refills linearly at limit/60s (verified against
+        x-ratelimit-reset-tokens to three decimals), so a shortfall converts
+        directly to a wait. A request larger than the whole bucket must not
+        wait: no amount of refill makes it fit."""
+        script = """
+import { decideWait } from './extensions/tpm-telemetry.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const cfg = { limit: 200000, reserve: 20000, maxWaitMs: 60000 };
+// Ample budget: never delay the agent.
+assert(decideWait(200000, 50000, cfg) === 0, 'full bucket does not wait');
+// Exactly enough once the reserve is honored.
+assert(decideWait(70000, 50000, cfg) === 0, 'exact fit does not wait');
+// One token short of the reserve: wait for that token.
+assert(decideWait(69999, 50000, cfg) > 0, 'one short waits');
+// Empty bucket: 50000 + 20000 reserve at 200000/60s = 3.3333 tok/ms.
+assert(decideWait(0, 50000, cfg) === 21000, 'shortfall to ms, got ' + decideWait(0, 50000, cfg));
+// Clamp: 190000 + 20000 = 210000 needed = 63000ms, over the cap.
+assert(decideWait(0, 190000, cfg) === 60000, 'clamped to maxWaitMs, got ' + decideWait(0, 190000, cfg));
+// Larger than the entire bucket: waiting cannot help, so do not.
+assert(decideWait(0, 250000, cfg) === 0, 'oversized request does not wait');
+assert(decideWait(200000, 200001, cfg) === 0, 'just-oversized does not wait');
+// A negative level (stale/racing estimate) must not produce a negative wait.
+assert(decideWait(-5000, 1000, cfg) > 0, 'negative level still waits');
+assert(decideWait(-5000, 1000, cfg) <= 60000, 'negative level stays clamped');
+// A free request never waits.
+assert(decideWait(0, 0, cfg) === 0, 'zero cost does not wait');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_governor_estimates_bucket_from_shared_log(self) -> None:
+        """Bucket level is anchored on the provider's own remaining-tokens
+        header, then adjusted for spend and refill since. Anchoring on the
+        provider beats a self-maintained counter, which drifts. Records for
+        other providers share the log but not the budget, so they must not
+        be counted. Knowing nothing must never block."""
+        script = """
+import { estimateBucket } from './extensions/tpm-telemetry.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const cfg = { limit: 200000, reserve: 20000, maxWaitMs: 60000 };
+const NOW = 1000000;
+const anchor = (ts, remaining, provider) => ({
+  ts, pid: 1, status: 200, retryAfterMs: null,
+  rateLimit: { 'x-ratelimit-remaining-tokens': String(remaining) },
+  contextTokens: 1000, provider, model: 'gpt-5.4',
+});
+const plain = (ts, ctx, provider) => ({
+  ts, pid: 1, status: 200, retryAfterMs: null, rateLimit: null,
+  contextTokens: ctx, provider, model: 'gpt-5.4',
+});
+// No evidence at all: assume a full bucket rather than block the agent.
+assert(estimateBucket([], NOW, cfg, 'openai') === 200000, 'empty log assumes full');
+assert(estimateBucket([plain(NOW, 5000, 'openai')], NOW, cfg, 'openai') === 200000,
+  'no anchor assumes full');
+// Anchored, no time passed: the provider's number stands.
+assert(estimateBucket([anchor(NOW, 50000, 'openai')], NOW, cfg, 'openai') === 50000,
+  'anchor used verbatim');
+// 30s of refill at 200000/60s adds 100000.
+assert(estimateBucket([anchor(NOW - 30000, 50000, 'openai')], NOW, cfg, 'openai') === 150000,
+  'refill added, got ' + estimateBucket([anchor(NOW - 30000, 50000, 'openai')], NOW, cfg, 'openai'));
+// Spend logged after the anchor is subtracted.
+const withSpend = [anchor(NOW - 30000, 50000, 'openai'), plain(NOW - 10000, 20000, 'openai')];
+assert(estimateBucket(withSpend, NOW, cfg, 'openai') === 130000,
+  'later spend subtracted, got ' + estimateBucket(withSpend, NOW, cfg, 'openai'));
+// Another provider shares the log but not the budget.
+const mixed = [anchor(NOW - 30000, 50000, 'openai'), plain(NOW - 10000, 20000, 'anthropic')];
+assert(estimateBucket(mixed, NOW, cfg, 'openai') === 150000,
+  'other provider ignored, got ' + estimateBucket(mixed, NOW, cfg, 'openai'));
+// The newest anchor wins over an older one.
+const twoAnchors = [anchor(NOW - 50000, 10000, 'openai'), anchor(NOW, 80000, 'openai')];
+assert(estimateBucket(twoAnchors, NOW, cfg, 'openai') === 80000,
+  'newest anchor wins, got ' + estimateBucket(twoAnchors, NOW, cfg, 'openai'));
+// Refill cannot overfill the bucket.
+assert(estimateBucket([anchor(NOW - 60000, 190000, 'openai')], NOW, cfg, 'openai') === 200000,
+  'clamped at limit');
+// Heavy logged spend cannot drive the estimate negative.
+const drained = [anchor(NOW, 0, 'openai'), plain(NOW, 50000, 'openai')];
+assert(estimateBucket(drained, NOW, cfg, 'openai') === 0, 'clamped at zero');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_governor_estimates_request_cost_under_both_policies(self) -> None:
+        """What a pending request will draw from the bucket.
+
+        Whether OpenAI charges the reserved max_tokens or the actual output
+        is unsettled (see the tpm-governor design doc); the policy switch is
+        the single unit that changes when the probe answers. An unknown
+        input size must estimate 0, so the governor never stalls an agent on
+        the basis of no evidence."""
+        script = """
+import { estimateCost } from './extensions/tpm-telemetry.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+// Reserved: the provider bills the ceiling whether or not it is generated.
+assert(estimateCost({
+  contextTokens: 100000, maxTokens: 50000, policy: 'reserved', outputEstimate: 16000,
+}) === 150000, 'reserved adds the ceiling');
+// Actual: the ceiling is irrelevant; observed output is what bills.
+assert(estimateCost({
+  contextTokens: 100000, maxTokens: 50000, policy: 'actual', outputEstimate: 16000,
+}) === 116000, 'actual adds the observed estimate');
+// Reserved with no model ceiling known falls back to the observed estimate.
+assert(estimateCost({
+  contextTokens: 100000, maxTokens: null, policy: 'reserved', outputEstimate: 16000,
+}) === 116000, 'reserved falls back without a ceiling');
+// Unknown input size: estimate nothing rather than guess and stall.
+assert(estimateCost({
+  contextTokens: null, maxTokens: 50000, policy: 'reserved', outputEstimate: 16000,
+}) === 0, 'unknown context estimates zero');
+// Garbage must not propagate into the wait arithmetic.
+assert(estimateCost({
+  contextTokens: -5, maxTokens: 50000, policy: 'reserved', outputEstimate: 16000,
+}) === 0, 'negative context estimates zero');
+assert(estimateCost({
+  contextTokens: 100000, maxTokens: -1, policy: 'reserved', outputEstimate: 16000,
+}) === 116000, 'negative ceiling falls back');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_governor_counts_in_flight_intents_from_sibling_processes(self) -> None:
+        """In-flight requests must reduce the budget before they complete.
+
+        Response records appear a round-trip late, so concurrent processes
+        deciding in the same second each see a budget none of the others has
+        spent yet, and all fire. Observed: three reviewer processes read
+        122216 and 122239 remaining in the same second and drained a 200000
+        budget to 25616 in ten seconds. An intent record claims the estimated
+        cost at pre-send so siblings see the claim immediately."""
+        script = """
+import { estimateBucket, buildIntentRecord } from './extensions/tpm-telemetry.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const cfg = { limit: 200000, reserve: 20000, maxWaitMs: 60000 };
+const NOW = 1000000;
+const anchor = (ts, remaining) => ({
+  ts, pid: 1, status: 200, retryAfterMs: null,
+  rateLimit: { 'x-ratelimit-remaining-tokens': String(remaining) },
+  contextTokens: 0, provider: 'openai', model: 'gpt-5.4',
+});
+const response = (ts, pid, ctx, intentId) => ({
+  ts, pid, status: 200, retryAfterMs: null, rateLimit: null,
+  contextTokens: ctx, provider: 'openai', model: 'gpt-5.4', intentId,
+});
+
+// A sibling's in-flight claim reduces what we believe is available.
+const intent = buildIntentRecord({
+  ts: NOW, pid: 2, provider: 'openai', model: 'gpt-5.4',
+  estimatedCost: 60000, intentId: 'sibling-1',
+});
+assert(intent.intent === true, 'intent is marked, got ' + JSON.stringify(intent));
+assert(intent.estimatedCost === 60000, 'cost carried');
+assert(intent.status === null, 'intent has no status');
+const withIntent = [anchor(NOW, 100000), intent];
+assert(estimateBucket(withIntent, NOW, cfg, 'openai') === 40000,
+  'in-flight claim subtracted, got ' + estimateBucket(withIntent, NOW, cfg, 'openai'));
+
+// Once the response lands, the request must be counted once, not twice.
+const settled = [anchor(NOW, 100000), intent, response(NOW, 2, 55000, 'sibling-1')];
+assert(estimateBucket(settled, NOW, cfg, 'openai') === 45000,
+  'settled intent not double-counted, got ' + estimateBucket(settled, NOW, cfg, 'openai'));
+
+// Another provider's in-flight work does not spend our budget.
+const other = buildIntentRecord({
+  ts: NOW, pid: 3, provider: 'anthropic', model: 'claude',
+  estimatedCost: 90000, intentId: 'other-1',
+});
+assert(estimateBucket([anchor(NOW, 100000), other], NOW, cfg, 'openai') === 100000,
+  'other provider intent ignored');
+
+// Several concurrent siblings accumulate, which is the whole point.
+const many = [anchor(NOW, 150000)];
+for (let i = 0; i < 3; i += 1) {
+  many.push(buildIntentRecord({
+    ts: NOW, pid: 10 + i, provider: 'openai', model: 'gpt-5.4',
+    estimatedCost: 40000, intentId: 'concurrent-' + i,
+  }));
+}
+assert(estimateBucket(many, NOW, cfg, 'openai') === 30000,
+  'three concurrent claims accumulate, got ' + estimateBucket(many, NOW, cfg, 'openai'));
+
+// An intent with no usable cost must not silently claim the whole bucket.
+const vague = { ...intent, estimatedCost: null, intentId: 'vague' };
+assert(estimateBucket([anchor(NOW, 100000), vague], NOW, cfg, 'openai') === 100000,
+  'unusable cost claims nothing');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_governor_ignores_future_dated_records(self) -> None:
+        """A record stamped in the future must not steer the budget.
+
+        Sibling Pi processes stamp their own records, so clock skew between
+        them is ordinary. An unbounded window lets a future record become
+        the newest anchor and dictate both the level and the reported limit,
+        turning skew into spurious holds."""
+        script = """
+import { estimateBucket, readReportedLimit } from './extensions/tpm-telemetry.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const cfg = { limit: 200000, reserve: 20000, maxWaitMs: 60000 };
+const NOW = 1000000;
+const rec = (ts, remaining, limit) => ({
+  ts, pid: 1, status: 200, retryAfterMs: null,
+  rateLimit: {
+    'x-ratelimit-remaining-tokens': String(remaining),
+    'x-ratelimit-limit-tokens': String(limit),
+  },
+  contextTokens: 1000, provider: 'openai', model: 'gpt-5.4',
+});
+
+// A drained future record must not override a healthy present one.
+const skewed = [rec(NOW, 150000, 200000), rec(NOW + 30000, 0, 200000)];
+assert(estimateBucket(skewed, NOW, cfg, 'openai') === 150000,
+  'future anchor ignored, got ' + estimateBucket(skewed, NOW, cfg, 'openai'));
+
+// A future record alone leaves no usable anchor: assume a full bucket
+// rather than hold the agent on evidence from a clock we do not trust.
+assert(estimateBucket([rec(NOW + 30000, 0, 200000)], NOW, cfg, 'openai') === 200000,
+  'lone future record does not drain the estimate');
+
+// Small skew stays usable; clocks between processes are never exact.
+assert(estimateBucket([rec(NOW + 1000, 50000, 200000)], NOW, cfg, 'openai') === 50000,
+  'one second of skew tolerated');
+
+// The reported limit must not come from a future record either.
+assert(readReportedLimit([rec(NOW + 30000, 0, 999999)], 'openai', NOW) === null,
+  'future limit ignored');
+assert(readReportedLimit(skewed, 'openai', NOW) === 200000, 'present limit still read');
+
+// Non-finite timestamps must never reach the arithmetic.
+const nan = { ...rec(NOW, 0, 200000), ts: Number.NaN };
+assert(estimateBucket([nan], NOW, cfg, 'openai') === 200000, 'NaN ts ignored');
+const inf = { ...rec(NOW, 0, 200000), ts: Number.POSITIVE_INFINITY };
+assert(estimateBucket([inf], NOW, cfg, 'openai') === 200000, 'Infinity ts ignored');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_governor_reads_reported_limit_per_provider(self) -> None:
+        """The budget is read from x-ratelimit-limit-tokens, not hardcoded.
+
+        200000 TPM is one account tier. Hardcoding it would throttle a
+        higher-tier account to a fraction of its real budget, so the limit
+        must come from whatever the provider reports."""
+        script = """
+import { readReportedLimit } from './extensions/tpm-telemetry.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const rec = (ts, limit, provider) => ({
+  ts, pid: 1, status: 200, retryAfterMs: null,
+  rateLimit: limit === null ? null : { 'x-ratelimit-limit-tokens': String(limit) },
+  contextTokens: 1000, provider, model: 'gpt-5.4',
+});
+const NOW = 1000;
+assert(readReportedLimit([rec(10, 200000, 'openai')], 'openai', NOW) === 200000, 'limit read');
+// A higher tier must not be throttled to the lower one.
+assert(readReportedLimit([rec(10, 2000000, 'openai')], 'openai', NOW) === 2000000, 'tier respected');
+// Newest wins, so a tier change takes effect.
+const changed = [rec(10, 200000, 'openai'), rec(20, 450000, 'openai')];
+assert(readReportedLimit(changed, 'openai', NOW) === 450000, 'newest wins, got ' + readReportedLimit(changed, 'openai', NOW));
+// Another provider's budget is not ours.
+assert(readReportedLimit([rec(10, 200000, 'anthropic')], 'openai', NOW) === null, 'other provider ignored');
+// Nothing reported: the caller decides the fallback.
+assert(readReportedLimit([], 'openai', NOW) === null, 'empty log reports nothing');
+assert(readReportedLimit([rec(10, null, 'openai')], 'openai', NOW) === null, 'absent header reports nothing');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_governor_holds_a_request_when_the_budget_is_spent(self) -> None:
+        """End-to-end through the real before_provider_request handler.
+
+        The pure functions are covered separately; this proves they are
+        actually wired into the request path, that a drained budget produces
+        a hold, and that a full budget does not. It reads the shared log a
+        sibling process would have written."""
+        script = """
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const agentDir = mkdtempSync(join(tmpdir(), 'tpm-gov-'));
+process.env.PI_AGENT_DIR = agentDir;
+process.env.PI_TPM_MAX_WAIT_MS = '300';
+const now = Date.now();
+const day = new Date(now).toISOString().slice(0, 10);
+const dir = join(agentDir, 'harness', 'telemetry');
+mkdirSync(dir, { recursive: true });
+
+const writeLog = (remaining) => writeFileSync(
+  join(dir, `tpm-${day}.jsonl`),
+  JSON.stringify({
+    ts: now, pid: 999, status: 200, retryAfterMs: null,
+    rateLimit: {
+      'x-ratelimit-remaining-tokens': String(remaining),
+      'x-ratelimit-limit-tokens': '200000',
+    },
+    contextTokens: 1000, provider: 'openai', model: 'gpt-5.4',
+  }) + '\\n',
+);
+
+const { default: register } = await import('./extensions/tpm-telemetry.ts');
+const handlers = new Map();
+register({
+  on: (event, handler) => handlers.set(event, handler),
+  registerCommand: () => {},
+});
+const handler = handlers.get('before_provider_request');
+assert(handler, 'before_provider_request handler registered');
+
+const ctx = {
+  hasUI: false,
+  model: { id: 'gpt-5.4', provider: 'openai', maxTokens: 32000 },
+  getContextUsage: () => ({ tokens: 50000 }),
+  signal: undefined,
+};
+
+// A sibling process drained the budget: this request must be held.
+writeLog(0);
+let started = Date.now();
+const returned = await handler({ type: 'before_provider_request', payload: { a: 1 } }, ctx);
+let held = Date.now() - started;
+assert(held >= 250, 'drained budget holds the request, held ' + held + 'ms');
+// The payload must pass through untouched; returning one would replace it.
+assert(returned === undefined, 'handler returns nothing, got ' + JSON.stringify(returned));
+
+// Budget available: the request must not be delayed.
+writeLog(200000);
+started = Date.now();
+await handler({ type: 'before_provider_request', payload: { a: 1 } }, ctx);
+held = Date.now() - started;
+assert(held < 150, 'full budget does not hold, held ' + held + 'ms');
+
+// No attribution means no evidence, which must never stall the agent.
+writeLog(0);
+started = Date.now();
+await handler({ type: 'before_provider_request', payload: {} }, { ...ctx, model: undefined });
+held = Date.now() - started;
+assert(held < 150, 'unattributable request does not hold, held ' + held + 'ms');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_tool_output_trimming_bounds_context_growth(self) -> None:
+        """Trim oversized exploration output before it enters context.
+
+        Pi's own cap is 50KB (~12k tokens) per tool result; 39 of those is
+        how a reviewer reached 90k context and priced itself out of a 200k
+        TPM budget. Head and tail are both kept: the head says what ran, and
+        errors and exit status live at the end, so a head-only trim throws
+        away the half that usually matters."""
+        script = """
+import { trimToolContent, TRIMMED_TOOLS } from './extensions/context-budget.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const text = (t) => [{ type: 'text', text: t }];
+const bytes = (blocks) => blocks
+  .filter((b) => b.type === 'text')
+  .reduce((n, b) => n + Buffer.byteLength(b.text, 'utf8'), 0);
+
+// Small output is left alone entirely — null means "no change".
+assert(trimToolContent(text('tiny'), { maxBytes: 1000 }) === null, 'small output untouched');
+
+// Oversized output is trimmed to roughly the budget.
+const big = 'HEAD-MARKER\\n' + 'x'.repeat(60000) + '\\nTAIL-MARKER';
+const out = trimToolContent(text(big), { maxBytes: 1000 });
+assert(out !== null, 'oversized output is trimmed');
+assert(bytes(out) <= 1400, 'trimmed to budget, got ' + bytes(out));
+assert(bytes(out) < Buffer.byteLength(big), 'trimmed smaller than original');
+
+// Both ends survive: the head shows what ran, the tail shows how it ended.
+const joined = out.map((b) => b.text).join('');
+assert(joined.includes('HEAD-MARKER'), 'head preserved');
+assert(joined.includes('TAIL-MARKER'), 'tail preserved');
+assert(/trimmed/i.test(joined), 'trim is announced, not silent');
+
+// Images are not text and must pass through untouched.
+const mixed = [
+  { type: 'text', text: 'y'.repeat(60000) },
+  { type: 'image', data: 'BASE64', mimeType: 'image/png' },
+];
+const mixedOut = trimToolContent(mixed, { maxBytes: 1000 });
+const images = mixedOut.filter((b) => b.type === 'image');
+assert(images.length === 1 && images[0].data === 'BASE64', 'image preserved intact');
+
+// Malformed input must never mutate a tool result.
+assert(trimToolContent(undefined, { maxBytes: 1000 }) === null, 'undefined untouched');
+assert(trimToolContent('not-an-array', { maxBytes: 1000 }) === null, 'non-array untouched');
+assert(trimToolContent([], { maxBytes: 1000 }) === null, 'empty untouched');
+// A zero budget disables trimming rather than erasing every result.
+assert(trimToolContent(text(big), { maxBytes: 0 }) === null, 'zero budget disables trimming');
+
+// The cap is a cap: the trim notice must be budgeted, not added on top,
+// or PI_TOOL_OUTPUT_MAX_BYTES is advisory rather than a limit.
+for (const cap of [1000, 2048, 8192]) {
+  const capped = trimToolContent(text('A'.repeat(200000)), { maxBytes: cap });
+  assert(bytes(capped) <= cap, `cap ${cap} honoured, got ` + bytes(capped));
+}
+// Multi-byte characters must not push the result past the cap either.
+const unicode = trimToolContent(text('\\u00e9\\u4e2d\\u{1f600}'.repeat(20000)), { maxBytes: 2000 });
+assert(bytes(unicode) <= 2000, 'unicode stays under cap, got ' + bytes(unicode));
+
+// Block order must survive: text that followed an image still follows it.
+// Reordering changes what a multimodal result means.
+const ordered = [
+  { type: 'text', text: 'BEFORE-' + 'a'.repeat(30000) },
+  { type: 'image', data: 'IMG', mimeType: 'image/png' },
+  { type: 'text', text: 'b'.repeat(30000) + '-AFTER' },
+];
+const orderedOut = trimToolContent(ordered, { maxBytes: 2000 });
+const kinds = orderedOut.map((b) => b.type);
+const imageAt = kinds.indexOf('image');
+assert(imageAt > 0, 'image is not first, got ' + JSON.stringify(kinds));
+assert(kinds.length > imageAt + 1, 'text remains after the image, got ' + JSON.stringify(kinds));
+const beforeText = orderedOut.slice(0, imageAt).map((b) => b.text || '').join('');
+const afterText = orderedOut.slice(imageAt + 1).map((b) => b.text || '').join('');
+assert(beforeText.includes('BEFORE-'), 'leading text stayed before the image');
+assert(afterText.includes('-AFTER'), 'trailing text stayed after the image');
+assert(bytes(orderedOut) <= 2000, 'ordered trim honours cap, got ' + bytes(orderedOut));
+
+// Exploration tools are trimmed; read/edit/write are not, because a
+// truncated file read would make the agent edit code it cannot see.
+assert(TRIMMED_TOOLS.includes('bash'), 'bash trimmed');
+assert(TRIMMED_TOOLS.includes('grep'), 'grep trimmed');
+assert(!TRIMMED_TOOLS.includes('read'), 'read NOT trimmed');
+assert(!TRIMMED_TOOLS.includes('edit'), 'edit NOT trimmed');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_context_budget_handler_replaces_only_exploration_output(self) -> None:
+        """End-to-end through the real tool_result handler.
+
+        Proves the trimmer is wired to the event Pi actually fires, returns
+        the replacement shape Pi applies (`{content}`), and leaves `read`
+        alone so a partially-seen file never reaches an editing agent."""
+        script = """
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+process.env.PI_TOOL_OUTPUT_MAX_BYTES = '500';
+const { default: register } = await import('./extensions/context-budget.ts');
+const handlers = new Map();
+register({ on: (event, handler) => handlers.set(event, handler) });
+const handler = handlers.get('tool_result');
+assert(handler, 'tool_result handler registered');
+
+const huge = 'START\\n' + 'z'.repeat(40000) + '\\nEND';
+const content = [{ type: 'text', text: huge }];
+const ctx = { model: { id: 'gpt-5.4', provider: 'openai' } };
+
+// bash output is trimmed, and returned in the shape Pi applies.
+const trimmed = handler({ toolName: 'bash', content }, ctx);
+assert(trimmed && Array.isArray(trimmed.content), 'bash result replaced, got ' + JSON.stringify(trimmed));
+const joined = trimmed.content.map((b) => b.text).join('');
+assert(joined.includes('START') && joined.includes('END'), 'both ends kept');
+assert(Buffer.byteLength(joined) < Buffer.byteLength(huge), 'actually smaller');
+
+// read is exempt: an agent must never edit a file it only partly saw.
+assert(handler({ toolName: 'read', content }, ctx) === undefined, 'read untouched');
+assert(handler({ toolName: 'edit', content }, ctx) === undefined, 'edit untouched');
+// Small results are not rewritten at all.
+assert(handler({ toolName: 'bash', content: [{ type: 'text', text: 'ok' }] }, ctx) === undefined,
+  'small bash result untouched');
+// A malformed event must not throw into the tool pipeline.
+assert(handler({}, ctx) === undefined, 'missing toolName tolerated');
+assert(handler({ toolName: 'bash' }, ctx) === undefined, 'missing content tolerated');
+
+// Trimming is a rate-limit remedy, so it applies only to rate-limited
+// providers. Trimming an unconstrained provider would cost capability to
+// solve a problem it does not have.
+const forProvider = (p) => handler({ toolName: 'bash', content }, { model: { id: 'm', provider: p } });
+assert(forProvider('openai') !== undefined, 'openai trimmed');
+assert(forProvider('openai-codex') !== undefined, 'openai-codex trimmed');
+assert(forProvider('deepseek') === undefined, 'deepseek NOT trimmed');
+assert(forProvider('anthropic') === undefined, 'anthropic NOT trimmed');
+// An unknown provider is not known to be constrained, so leave it alone.
+assert(handler({ toolName: 'bash', content }, { model: undefined }) === undefined,
+  'unknown provider NOT trimmed');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_governor_claim_makes_a_request_visible_to_siblings(self) -> None:
+        """End-to-end: the first request's claim throttles the second.
+
+        This is the reviewer failure in miniature. Before intent records, a
+        second process deciding while the first was still in flight saw the
+        full budget and fired. Now the first request writes its claim to the
+        shared log, and the second must account for it."""
+        script = """
+import { mkdirSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const agentDir = mkdtempSync(join(tmpdir(), 'tpm-intent-'));
+process.env.PI_AGENT_DIR = agentDir;
+process.env.PI_TPM_MAX_WAIT_MS = '300';
+process.env.PI_TPM_OUTPUT_ESTIMATE = '0';
+const now = Date.now();
+const day = new Date(now).toISOString().slice(0, 10);
+const dir = join(agentDir, 'harness', 'telemetry');
+mkdirSync(dir, { recursive: true });
+const logPath = join(dir, `tpm-${day}.jsonl`);
+
+// A healthy bucket: 120000 left, exactly the picture the three reviewers saw.
+writeFileSync(logPath, JSON.stringify({
+  ts: now, pid: 999, status: 200, retryAfterMs: null,
+  rateLimit: {
+    'x-ratelimit-remaining-tokens': '120000',
+    'x-ratelimit-limit-tokens': '200000',
+  },
+  contextTokens: 0, provider: 'openai', model: 'gpt-5.4',
+}) + '\\n');
+
+const { default: register } = await import('./extensions/tpm-telemetry.ts');
+const handlers = new Map();
+register({ on: (e, h) => handlers.set(e, h), registerCommand: () => {} });
+const handler = handlers.get('before_provider_request');
+const ctx = {
+  hasUI: false,
+  model: { id: 'gpt-5.4', provider: 'openai', maxTokens: 32000 },
+  getContextUsage: () => ({ tokens: 90000 }),
+  signal: undefined,
+};
+
+// First request: 90000 fits inside 120000 with a 20000 reserve, so no hold.
+let started = Date.now();
+await handler({ type: 'before_provider_request', payload: {} }, ctx);
+assert(Date.now() - started < 150, 'first request is not held');
+
+// It must have left a claim behind for siblings to see.
+const lines = readFileSync(logPath, 'utf8').trim().split('\\n').map((l) => JSON.parse(l));
+const claims = lines.filter((r) => r.intent === true);
+assert(claims.length === 1, 'one claim written, got ' + claims.length);
+assert(claims[0].estimatedCost === 90000, 'claim carries the cost, got ' + claims[0].estimatedCost);
+assert(claims[0].provider === 'openai', 'claim attributed');
+
+// Second request, still in the same instant: 120000 - 90000 = 30000 left,
+// which cannot cover another 90000, so this one must wait.
+started = Date.now();
+await handler({ type: 'before_provider_request', payload: {} }, ctx);
+const held = Date.now() - started;
+assert(held >= 250, 'second request held by the first claim, held ' + held + 'ms');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_documentation_matches_manifests(self) -> None:
         version = VERSION_FILE.read_text(encoding="utf-8").strip()
@@ -596,32 +1587,56 @@ class RepositoryValidationTests(unittest.TestCase):
         self.assertIn("https://mcp.context7.com/mcp", readme)
         self.assertIn("https://mcp.context7.com/mcp", capabilities)
         self.assertIn("https://mcp.context7.com/mcp", mcp_docs)
+        self.assertEqual(mcp_docs.count("# Personally Maintained MCP Servers"), 0)
         self.assertIn("## Local Model Providers", capabilities)
         self.assertIn("/login llama.cpp", capabilities)
         self.assertIn("extensions/local-models.ts", capabilities)
         self.assertIn("permissions/protected-paths.ts", capabilities)
         self.assertIn("PROTECTED_DIRECTORIES", capabilities)
+        self.assertIn("Linux and macOS", readme + deployment)
+        self.assertIn("not an OS sandbox", readme + capabilities)
+        self.assertIn(".managed-state.json", readme + deployment)
+        self.assertIn("removed package", readme + deployment)
+        self.assertIn("--skip-packages", deployment)
+        self.assertIn("config/settings-defaults.json", readme)
+        self.assertIn("config/settings-defaults.json", deployment)
+        self.assertIn("config/models-defaults.json", readme)
+        self.assertIn("config/models-defaults.json", deployment)
+        self.assertIn("extensions/tpm-telemetry.ts", readme + deployment)
+        self.assertIn("extensions/tpm-telemetry.ts", capabilities)
+        self.assertIn("/tpm", readme + deployment)
+        self.assertIn("/mcp", deployment)
+        self.assertIn(
+            ".pi-subagents/",
+            (ROOT / ".gitignore").read_text(encoding="utf-8"),
+        )
 
-    def test_no_private_reference_markers_in_tracked_files(self) -> None:
-        tracked = subprocess.run(
-            ["git", "ls-files"],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            check=True,
-        ).stdout.splitlines()
-        self.assertTrue(tracked, "expected a git repository with tracked files")
-        this_file = Path(__file__).resolve()
-        for relative in tracked:
-            path = ROOT / relative
-            if not path.is_file() or path.resolve() == this_file:
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-            for marker in PRIVATE_REFERENCE_MARKERS:
-                self.assertNotIn(
-                    marker,
-                    text,
-                    f"{relative} contains the private reference marker {marker!r}",
+    def test_native_windows_documentation_contract_rejects_support_claims(self) -> None:
+        defensive_documentation = (
+            "Require per-call approval through native Linux and macOS enforcement. "
+            "Defensively recognize lexical Windows credential paths and sensitive "
+            "Registry reads, but native Windows installation and workspace enforcement "
+            "are unsupported."
+        )
+        assert_native_windows_documentation_contract(self, defensive_documentation)
+
+        with self.assertRaises(AssertionError):
+            assert_native_windows_documentation_contract(
+                self,
+                "Windows strings are defensively recognized.",
+            )
+
+        unsupported_claims = (
+            "Windows is a supported native host",
+            "The harness works natively on Windows",
+            "Native Windows installation and workspace enforcement are supported",
+            "Require per-call approval for credential files on Linux, macOS, or Windows",
+        )
+        for claim in unsupported_claims:
+            with self.subTest(claim=claim), self.assertRaises(AssertionError):
+                assert_native_windows_documentation_contract(
+                    self,
+                    defensive_documentation + " " + claim,
                 )
 
     def test_harness_document_links_resolve_locally(self) -> None:
@@ -1447,6 +2462,69 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
             self.skipTest("Node.js on PATH cannot strip TypeScript types")
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_local_models_context_length_parsing(self) -> None:
+        script = """
+import {
+  extractOllamaLoadedContextLength,
+  extractLmStudioContextLength,
+  extractContextLength,
+  PLACEHOLDER_CONTEXT_WINDOW,
+} from './extensions/local-models.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+assert(PLACEHOLDER_CONTEXT_WINDOW === 32768, 'placeholder constant');
+// Ollama: /api/ps reports the loaded runtime window. A model absent from it
+// is not loaded, which must read as unverified rather than as a number.
+const ps = { models: [
+  { name: 'qwen3:8b', model: 'qwen3:8b', context_length: 4096 },
+  { name: 'gpt-oss:20b', model: 'gpt-oss:20b', num_ctx: 8192 },
+  { name: 'mistral:latest', model: 'mistral:latest', context_length: 16384.7 },
+  { name: 'nolen:1b', model: 'nolen:1b' },
+  { name: 'zero:1b', model: 'zero:1b', context_length: 0 },
+  { name: 'text:1b', model: 'text:1b', context_length: 'big' },
+] };
+assert(extractOllamaLoadedContextLength(ps, 'qwen3:8b') === 4096, 'ollama loaded context_length');
+assert(extractOllamaLoadedContextLength(ps, 'gpt-oss:20b') === 8192, 'ollama num_ctx fallback');
+assert(extractOllamaLoadedContextLength(ps, 'mistral:latest') === 16384, 'floored');
+assert(extractOllamaLoadedContextLength(ps, 'mistral') === 16384, 'tagless id matches :latest');
+assert(extractOllamaLoadedContextLength(ps, 'nolen:1b') === undefined, 'entry without a value');
+assert(extractOllamaLoadedContextLength(ps, 'zero:1b') === undefined, 'zero rejected');
+assert(extractOllamaLoadedContextLength(ps, 'text:1b') === undefined, 'non-number rejected');
+assert(extractOllamaLoadedContextLength(ps, 'absent:1b') === undefined, 'model not loaded is unverified');
+assert(extractOllamaLoadedContextLength({ models: [] }, 'qwen3:8b') === undefined, 'nothing loaded');
+assert(extractOllamaLoadedContextLength({}, 'qwen3:8b') === undefined, 'missing models');
+assert(extractOllamaLoadedContextLength({ models: 'nope' }, 'q') === undefined, 'non-array models');
+assert(extractOllamaLoadedContextLength('junk', 'q') === undefined, 'non-object payload');
+// An /api/show payload must not be mistaken for a verified window: an
+// unrecognised shape degrades to undefined (disarmed), never to a number.
+assert(extractOllamaLoadedContextLength({ model_info: { 'qwen3.context_length': 40960 } }, 'qwen3:8b') === undefined, 'trained-for metadata is not a verified window');
+const lms = { data: [
+  { id: 'qwen3-8b', max_context_length: 131072, loaded_context_length: 16384 },
+  { id: 'other', max_context_length: 4096 },
+] };
+assert(extractLmStudioContextLength(lms, 'qwen3-8b') === 16384, 'loaded wins over max');
+assert(extractLmStudioContextLength(lms, 'other') === 4096, 'max fallback');
+assert(extractLmStudioContextLength(lms, 'absent') === undefined, 'unknown id');
+assert(extractLmStudioContextLength({ data: [{ id: 'a' }] }, 'a') === undefined, 'no lengths');
+assert(extractLmStudioContextLength({}, 'a') === undefined, 'missing data');
+assert(extractContextLength('ollama', ps, 'qwen3:8b') === 4096, 'dispatch ollama');
+assert(extractContextLength('lmstudio', lms, 'qwen3-8b') === 16384, 'dispatch lmstudio');
+assert(extractContextLength('llamacpp', ps, 'qwen3:8b') === undefined, 'unknown provider unverified');
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def test_protected_paths_policy_decisions(self) -> None:
         home = str(Path.home())
         cases = [
@@ -1520,6 +2598,32 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
              "request", "request", "request", "request", None, None,
              "request", "request", "request", "request", "request", "request", "request", "request",
              "request", "request", None, "request", "request", "request", "request"],
+        )
+
+    def test_protected_paths_policy_resolves_shell_operands(self) -> None:
+        home = Path.home()
+        workspace = retained_on_failure_tmpdir(self, "shell-secret-")
+        secret_dir = workspace / "credential-store"
+        secret_dir.mkdir()
+        secret = secret_dir / ".env"
+        secret.write_text("TOKEN=fixture-only\n", encoding="utf-8")
+        (workspace / "credentials").symlink_to(secret)
+        cases = [
+            {"cwd": str(workspace), "tool": {"toolName": "bash", "command": "cat credentials", "input": {}}},
+            {"cwd": str(home), "tool": {"toolName": "bash", "command": "cat .aws/credentials", "input": {}}},
+            {"cwd": str(home), "tool": {"toolName": "bash", "command": "grep -R token .aws", "input": {}}},
+            {"cwd": str(home), "tool": {"toolName": "bash", "command": "sh -c 'cat ~/.aws/credentials'", "input": {}}},
+            {"cwd": str(home), "tool": {"toolName": "bash", "command": "printf \"$(cat ~/.aws/credentials)\"", "input": {}}},
+            {"cwd": str(home), "tool": {"toolName": "bash", "command": "printf \"`cat ~/.aws/credentials`\"", "input": {}}},
+            {"cwd": str(home), "tool": {"toolName": "bash", "command": "printf '`cat ~/.aws/credentials`'", "input": {}}},
+            {"cwd": str(workspace), "tool": {"toolName": "bash", "command": "cat README.md", "input": {}}},
+        ]
+        decisions = run_policy_cases(
+            self, "permissions/protected-paths.ts", cases
+        )
+        self.assertEqual(
+            decisions,
+            ["request", "request", "request", "request", "request", "request", None, None],
         )
 
     def test_workspace_scope_policy_decisions(self) -> None:
@@ -1747,12 +2851,17 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
         # Node 22.6+ can strip types; the loader in Pi does the same. Without
         # this check, a syntax error in the policy would only surface at Pi
         # load time. --check parses without resolving package imports.
+        # Extensions are enumerated from disk, not listed: the installer links
+        # every file in extensions/, so a new one that never got added to a
+        # hand-written list would ship unparsed.
+        extensions = sorted((ROOT / "extensions").glob("*.ts"))
+        self.assertTrue(extensions, "no extensions found to parse-check")
         for module in (
             ROOT / "permissions" / "confirm-deletions.ts",
             ROOT / "permissions" / "confirm-egress.ts",
             ROOT / "permissions" / "protected-paths.ts",
             ROOT / "permissions" / "workspace-scope.ts",
-            ROOT / "extensions" / "local-models.ts",
+            *extensions,
         ):
             with self.subTest(module=module.name):
                 result = subprocess.run(
@@ -1766,6 +2875,624 @@ assert(LOCAL_PROVIDER_TARGETS[1].envVar === 'LMSTUDIO_BASE_URL', 'lmstudio env v
                 if result.returncode != 0 and "bad option" in result.stdout:
                     self.skipTest("Node.js on PATH cannot strip TypeScript types")
                 self.assertEqual(result.returncode, 0, result.stdout)
+
+
+class ManagedStateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture_root = retained_on_failure_tmpdir(self, "managed-state-")
+        self.agent_dir = self.fixture_root / "agent"
+        self.agent_dir.mkdir()
+
+    def complete_receipt(self, **overrides: object) -> dict:
+        receipt = {
+            "schemaVersion": 1,
+            "harnessRoot": str(ROOT),
+            "harnessVersion": VERSION_FILE.read_text(encoding="utf-8").strip(),
+            "agentDir": str(self.agent_dir),
+            "agents": [],
+            "resources": [],
+            "extensions": [],
+            "permissions": [],
+            "settings": [],
+            "mcp": [],
+            "models": [],
+            "packages": [],
+        }
+        receipt.update(overrides)
+        return receipt
+
+    @staticmethod
+    def write_loaded_receipt_fixture(path: Path, receipt: dict) -> None:
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        path.chmod(0o600)
+
+    def test_preflight_install_accepts_legacy_aggregate_symlink_without_mutation(self) -> None:
+        legacy_source = self.fixture_root / "legacy-skills"
+        legacy_source.mkdir()
+        (legacy_source / "marker.txt").write_text("legacy\n", encoding="utf-8")
+        aggregate = self.agent_dir / "harness" / "skills"
+        aggregate.parent.mkdir()
+        aggregate.symlink_to(legacy_source, target_is_directory=True)
+        link_before = os.readlink(aggregate)
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            result = managed_state.main([
+                "preflight-install",
+                "--harness-root", str(ROOT),
+                "--agent-dir", str(self.agent_dir),
+            ])
+
+        self.assertEqual(result, 0, output.getvalue())
+        self.assertTrue(aggregate.is_symlink())
+        self.assertEqual(os.readlink(aggregate), link_before)
+        self.assertEqual((legacy_source / "marker.txt").read_text(), "legacy\n")
+        receipt_path = self.agent_dir / "harness" / ".managed-state.json"
+        desired = managed_state.build_desired_state(ROOT, self.agent_dir)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            managed_state.write_receipt(receipt_path, desired)
+        self.assertFalse(receipt_path.exists())
+
+    def test_desired_state_contains_only_public_managed_values(self) -> None:
+        state = managed_state.build_desired_state(ROOT, self.agent_dir)
+
+        self.assertEqual(state["schemaVersion"], 1)
+        serialized = json.dumps(state)
+        self.assertNotIn("headers", serialized)
+        self.assertNotIn("apiKey", serialized)
+        self.assertNotIn("env", state)
+        self.assertTrue(state["permissions"])
+        self.assertTrue(state["extensions"])
+        self.assertEqual(
+            state["mcp"],
+            [{
+                "name": "context7",
+                "definition": {
+                    "url": "https://mcp.context7.com/mcp",
+                    "lifecycle": "lazy",
+                },
+            }],
+        )
+        defaults = json.loads(
+            (ROOT / "config" / "settings-defaults.json").read_text(encoding="utf-8")
+        )["settings"]
+        recorded_defaults = {
+            entry["kind"]: entry["value"]
+            for entry in state["settings"]
+            if entry["kind"] in defaults
+        }
+        self.assertEqual(recorded_defaults, defaults)
+        model_defaults = json.loads(
+            (ROOT / "config" / "models-defaults.json").read_text(encoding="utf-8")
+        )["models"]
+        recorded_models = {}
+        for entry in state["models"]:
+            recorded_models.setdefault(entry["provider"], {})[entry["model"]] = entry["value"]
+        self.assertEqual(recorded_models, model_defaults)
+
+    def test_receipt_rejects_incomplete_persisted_state(self) -> None:
+        path = self.fixture_root / "receipt.json"
+        path.write_text('{"schemaVersion": 1}\n', encoding="utf-8")
+        path.chmod(0o600)
+
+        with self.assertRaisesRegex(ValueError, "missing required fields"):
+            managed_state.load_receipt(path, self.agent_dir)
+
+    def test_receipt_rejects_mode_other_than_0600(self) -> None:
+        path = self.fixture_root / "receipt.json"
+        path.write_text(json.dumps(self.complete_receipt()), encoding="utf-8")
+        path.chmod(0o644)
+
+        with self.assertRaisesRegex(ValueError, "mode must be 0600"):
+            managed_state.load_receipt(path, self.agent_dir)
+
+    def test_receipt_rejects_targets_outside_agent_dir(self) -> None:
+        receipt = self.complete_receipt(permissions=[{
+            "target": "/etc/hosts",
+            "sha256": "0" * 64,
+            "source": str(ROOT / "permissions" / "confirm-deletions.ts"),
+        }])
+        path = self.fixture_root / "receipt.json"
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        path.chmod(0o600)
+
+        with self.assertRaisesRegex(ValueError, "outside Pi agent directory"):
+            managed_state.load_receipt(path, self.agent_dir)
+
+    def test_receipt_rejects_unknown_schema_and_non_list_collection(self) -> None:
+        path = self.fixture_root / "receipt.json"
+        for receipt, message in (
+            (self.complete_receipt(schemaVersion=999), "unsupported"),
+            (self.complete_receipt(permissions={}), "must be a list"),
+        ):
+            with self.subTest(message=message):
+                self.write_loaded_receipt_fixture(path, receipt)
+                with self.assertRaisesRegex(ValueError, message):
+                    managed_state.load_receipt(path, self.agent_dir)
+
+    def test_receipt_rejects_duplicate_targets_and_malformed_hashes(self) -> None:
+        target = str(self.agent_dir / "permissions" / "policy.ts")
+        path = self.fixture_root / "receipt.json"
+        for receipt, message in (
+            (self.complete_receipt(permissions=[
+                {"target": target, "source": "/source/a", "sha256": "0" * 64},
+                {"target": target, "source": "/source/b", "sha256": "1" * 64},
+            ]), "duplicate target"),
+            (self.complete_receipt(permissions=[
+                {"target": target, "source": "/source/a", "sha256": "xyz"},
+            ]), "SHA-256"),
+        ):
+            with self.subTest(message=message):
+                self.write_loaded_receipt_fixture(path, receipt)
+                with self.assertRaisesRegex(ValueError, message):
+                    managed_state.load_receipt(path, self.agent_dir)
+
+    def test_receipt_rejects_symlinked_agent_and_receipt_paths(self) -> None:
+        outside = self.fixture_root / "outside"
+        outside.mkdir()
+        receipt_payload = self.complete_receipt()
+
+        linked_agent = self.fixture_root / "linked-agent"
+        linked_agent.symlink_to(outside, target_is_directory=True)
+        outside_receipt = outside / "receipt.json"
+        self.write_loaded_receipt_fixture(outside_receipt, receipt_payload)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            managed_state.load_receipt(outside_receipt, linked_agent)
+
+        harness = self.agent_dir / "harness"
+        harness.symlink_to(outside, target_is_directory=True)
+        redirected_receipt = harness / ".managed-state.json"
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            managed_state.load_receipt(redirected_receipt, self.agent_dir)
+        harness.unlink()
+
+        harness.mkdir()
+        final_receipt = harness / ".managed-state.json"
+        final_receipt.symlink_to(outside_receipt)
+        original = outside_receipt.read_bytes()
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            managed_state.load_receipt(final_receipt, self.agent_dir)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            managed_state.write_receipt(final_receipt, receipt_payload)
+        self.assertEqual(outside_receipt.read_bytes(), original)
+
+    def test_receipt_rejects_target_through_symlinked_agent_subdirectory(self) -> None:
+        outside = self.fixture_root / "outside-permissions"
+        outside.mkdir()
+        (self.agent_dir / "permissions").symlink_to(outside, target_is_directory=True)
+        receipt = self.complete_receipt(permissions=[{
+            "target": str(self.agent_dir / "permissions" / "policy.ts"),
+            "source": "/source/policy.ts",
+            "sha256": "0" * 64,
+        }])
+        path = self.fixture_root / "receipt.json"
+        self.write_loaded_receipt_fixture(path, receipt)
+
+        with self.assertRaisesRegex(ValueError, "outside Pi agent directory|symlink"):
+            managed_state.load_receipt(path, self.agent_dir)
+
+    def test_receipt_collection_schemas_are_strict(self) -> None:
+        path = self.fixture_root / "receipt.json"
+        valid_entries = {
+            "agents": {
+                "source": "/source/AGENTS.md",
+                "target": str(self.agent_dir / "AGENTS.md"),
+            },
+            "resources": {
+                "kind": "skills",
+                "name": "old",
+                "source": "/source/old",
+                "target": str(self.agent_dir / "harness" / "skills" / "old"),
+            },
+            "extensions": {
+                "source": "/source/old.ts",
+                "target": str(self.agent_dir / "extensions" / "old.ts"),
+            },
+            "permissions": {
+                "source": "/source/old.ts",
+                "target": str(self.agent_dir / "permissions" / "old.ts"),
+                "sha256": "0" * 64,
+            },
+            "settings": {"kind": "skills", "value": "/managed/skill"},
+            "mcp": {"name": "context7", "definition": {"url": "https://example"}},
+        }
+        for collection, entry in valid_entries.items():
+            with self.subTest(collection=collection):
+                receipt = self.complete_receipt(
+                    **{collection: [{**entry, "unexpected": "private-value"}]}
+                )
+                self.write_loaded_receipt_fixture(path, receipt)
+                with self.assertRaisesRegex(ValueError, "unknown fields"):
+                    managed_state.load_receipt(path, self.agent_dir)
+
+    def test_receipt_restricts_setting_kinds_to_managed_collections(self) -> None:
+        path = self.fixture_root / "receipt.json"
+        self.write_loaded_receipt_fixture(
+            path,
+            self.complete_receipt(
+                settings=[{"kind": "theme", "value": "user-owned"}]
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "setting kind is unsupported"):
+            managed_state.load_receipt(path, self.agent_dir)
+
+    def test_receipt_rejects_object_setting_with_non_object_value(self) -> None:
+        path = self.fixture_root / "receipt.json"
+        for value in ("not-an-object", []):
+            with self.subTest(value=value):
+                self.write_loaded_receipt_fixture(
+                    path,
+                    self.complete_receipt(
+                        settings=[{"kind": "retry", "value": value}]
+                    ),
+                )
+                with self.assertRaisesRegex(ValueError, "non-empty object"):
+                    managed_state.load_receipt(path, self.agent_dir)
+
+    def test_symlinked_settings_and_mcp_are_foreign_and_rejected(self) -> None:
+        external_settings = self.fixture_root / "external-settings.json"
+        external_settings.write_text(
+            json.dumps({"skills": ["/managed/skill"]}), encoding="utf-8"
+        )
+        external_mcp = self.fixture_root / "external-mcp.json"
+        definition = {"url": "https://example"}
+        external_mcp.write_text(
+            json.dumps({"mcpServers": {"managed": definition}}), encoding="utf-8"
+        )
+        (self.agent_dir / "settings.json").symlink_to(external_settings)
+        (self.agent_dir / "mcp.json").symlink_to(external_mcp)
+        previous = {
+            "schemaVersion": 1,
+            "agentDir": str(self.agent_dir),
+            "settings": [{"kind": "skills", "value": "/managed/skill"}],
+            "mcp": [{"name": "managed", "definition": definition}],
+        }
+
+        actions = managed_state.classify_stale(
+            previous,
+            {"schemaVersion": 1, "agentDir": str(self.agent_dir)},
+        )
+        self.assertEqual([action["status"] for action in actions], ["foreign", "foreign"])
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            managed_state.preflight_uninstall(ROOT, self.agent_dir)
+        self.assertEqual(
+            json.loads(external_settings.read_text(encoding="utf-8")),
+            {"skills": ["/managed/skill"]},
+        )
+        self.assertEqual(
+            json.loads(external_mcp.read_text(encoding="utf-8")),
+            {"mcpServers": {"managed": definition}},
+        )
+
+    def test_symlink_ownership_requires_exact_installed_link_text(self) -> None:
+        source = self.fixture_root / "source" / "old.ts"
+        source.parent.mkdir()
+        source.write_text("source\n", encoding="utf-8")
+        alias = self.fixture_root / "source-alias"
+        alias.symlink_to(source.parent, target_is_directory=True)
+        target = self.agent_dir / "extensions" / "old.ts"
+        target.parent.mkdir()
+        previous = {
+            "schemaVersion": 1,
+            "extensions": [{"source": str(source), "target": str(target)}],
+        }
+        desired = {"schemaVersion": 1, "extensions": []}
+
+        target.symlink_to(alias / source.name)
+        self.assertEqual(
+            managed_state.classify_stale(previous, desired)[0]["status"],
+            "modified",
+        )
+        target.unlink()
+        target.symlink_to(os.path.relpath(source, target.parent))
+        self.assertEqual(
+            managed_state.classify_stale(previous, desired)[0]["status"],
+            "modified",
+        )
+        target.unlink()
+        target.symlink_to(str(source))
+        self.assertEqual(
+            managed_state.classify_stale(previous, desired)[0]["status"],
+            "owned",
+        )
+
+    def test_backup_symlink_ancestry_fails_before_any_move(self) -> None:
+        permission = self.agent_dir / "permissions" / "old.ts"
+        extension_source = self.fixture_root / "source" / "old.ts"
+        extension = self.agent_dir / "extensions" / "old.ts"
+        permission.parent.mkdir()
+        extension_source.parent.mkdir()
+        extension.parent.mkdir()
+        permission.write_text("owned\n", encoding="utf-8")
+        extension_source.write_text("source\n", encoding="utf-8")
+        extension.symlink_to(str(extension_source))
+        previous = {
+            "schemaVersion": 1,
+            "permissions": [{
+                "source": "/source/old.ts",
+                "target": str(permission),
+                "sha256": managed_state.sha256_file(permission),
+            }],
+            "extensions": [{"source": str(extension_source), "target": str(extension)}],
+        }
+        backup = self.fixture_root / "backup"
+        backup.mkdir()
+        redirected = self.fixture_root / "redirected"
+        redirected.mkdir()
+        (backup / "extensions").symlink_to(redirected, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "backup.*symlink"):
+            managed_state.reconcile_install(
+                previous,
+                {"schemaVersion": 1, "permissions": [], "extensions": []},
+                self.agent_dir,
+                backup,
+                dry_run=False,
+            )
+        self.assertTrue(permission.exists())
+        self.assertTrue(extension.is_symlink())
+        self.assertEqual(list(redirected.iterdir()), [])
+
+    def test_existing_backup_root_under_symlinked_ancestor_is_rejected(self) -> None:
+        """Ancestry above an *existing* backup root must be checked too.
+
+        The ancestor walk runs only when the root does not yet exist, so a
+        backup root already sitting under a symlinked parent passes. The
+        physical containment check still holds — the destination is beneath
+        the resolved root — but the whole tree has been relocated, which is
+        the thing containment was meant to prevent."""
+        permission = self.agent_dir / "permissions" / "old.ts"
+        permission.parent.mkdir()
+        permission.write_text("owned\n", encoding="utf-8")
+        previous = {
+            "schemaVersion": 1,
+            "permissions": [{
+                "source": "/source/old.ts",
+                "target": str(permission),
+                "sha256": managed_state.sha256_file(permission),
+            }],
+        }
+        outside = self.fixture_root / "outside"
+        outside.mkdir()
+        link = self.fixture_root / "link"
+        link.symlink_to(outside, target_is_directory=True)
+        backup = link / "backup"
+        backup.mkdir()
+
+        with self.assertRaisesRegex(ValueError, "backup.*symlink"):
+            managed_state.reconcile_install(
+                previous,
+                {"schemaVersion": 1, "permissions": []},
+                self.agent_dir,
+                backup,
+                dry_run=False,
+            )
+        self.assertTrue(permission.exists())
+        self.assertEqual(list((outside / "backup").iterdir()), [])
+
+    def test_backup_non_directory_ancestry_fails_before_any_move(self) -> None:
+        first = self.agent_dir / "permissions" / "first.ts"
+        second = self.agent_dir / "permissions" / "nested" / "second.ts"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_text("first\n", encoding="utf-8")
+        second.write_text("second\n", encoding="utf-8")
+        previous = {
+            "schemaVersion": 1,
+            "permissions": [
+                {
+                    "source": "/source/first.ts",
+                    "target": str(first),
+                    "sha256": managed_state.sha256_file(first),
+                },
+                {
+                    "source": "/source/second.ts",
+                    "target": str(second),
+                    "sha256": managed_state.sha256_file(second),
+                },
+            ],
+        }
+        backup = self.fixture_root / "backup"
+        (backup / "permissions").mkdir(parents=True)
+        (backup / "permissions" / "nested").write_text("not a directory\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "backup.*not a directory"):
+            managed_state.reconcile_install(
+                previous,
+                {"schemaVersion": 1, "permissions": []},
+                self.agent_dir,
+                backup,
+                dry_run=False,
+            )
+        self.assertTrue(first.exists())
+        self.assertTrue(second.exists())
+
+    def test_unwritable_backup_root_fails_before_any_move(self) -> None:
+        target = self.agent_dir / "permissions" / "old.ts"
+        target.parent.mkdir()
+        target.write_text("owned\n", encoding="utf-8")
+        previous = {
+            "schemaVersion": 1,
+            "permissions": [{
+                "source": "/source/old.ts",
+                "target": str(target),
+                "sha256": managed_state.sha256_file(target),
+            }],
+        }
+        backup = self.fixture_root / "backup"
+        backup.mkdir(mode=0o500)
+
+        with self.assertRaisesRegex(ValueError, "backup.*writable"):
+            managed_state.reconcile_install(
+                previous,
+                {"schemaVersion": 1, "permissions": []},
+                self.agent_dir,
+                backup,
+                dry_run=False,
+            )
+        self.assertTrue(target.exists())
+
+    def test_stale_permission_requires_matching_hash(self) -> None:
+        target = self.agent_dir / "permissions" / "old.ts"
+        target.parent.mkdir()
+        target.write_text("owned\n", encoding="utf-8")
+        previous = {
+            "schemaVersion": 1,
+            "permissions": [{
+                "source": "/source/old.ts",
+                "target": str(target),
+                "sha256": managed_state.sha256_file(target),
+            }],
+        }
+        desired = {"schemaVersion": 1, "permissions": []}
+
+        actions = managed_state.classify_stale(previous, desired)
+        self.assertEqual(actions[0]["status"], "owned")
+
+        target.write_text("user modified\n", encoding="utf-8")
+        actions = managed_state.classify_stale(previous, desired)
+        self.assertEqual(actions[0]["status"], "modified")
+        self.assertNotEqual(actions[0]["status"], "owned")
+
+    def test_foreign_symlink_state_is_never_owned(self) -> None:
+        target = self.agent_dir / "extensions" / "old.ts"
+        target.parent.mkdir()
+        target.write_text("not a symlink\n", encoding="utf-8")
+        previous = {
+            "schemaVersion": 1,
+            "extensions": [{
+                "source": str(self.fixture_root / "source" / "old.ts"),
+                "target": str(target),
+            }],
+        }
+
+        action = managed_state.classify_stale(
+            previous, {"schemaVersion": 1, "extensions": []}
+        )[0]
+        self.assertEqual(action["status"], "foreign")
+        self.assertNotEqual(action["status"], "owned")
+
+    def test_reconcile_moves_only_owned_files_and_reports_packages(self) -> None:
+        owned = self.agent_dir / "permissions" / "owned.ts"
+        modified = self.agent_dir / "permissions" / "modified.ts"
+        owned.parent.mkdir()
+        owned.write_text("owned\n", encoding="utf-8")
+        modified.write_text("before\n", encoding="utf-8")
+        previous = {
+            "schemaVersion": 1,
+            "permissions": [
+                {
+                    "source": "/source/owned.ts",
+                    "target": str(owned),
+                    "sha256": managed_state.sha256_file(owned),
+                },
+                {
+                    "source": "/source/modified.ts",
+                    "target": str(modified),
+                    "sha256": managed_state.sha256_file(modified),
+                },
+            ],
+            "packages": ["npm:removed@example"],
+        }
+        modified.write_text("after\n", encoding="utf-8")
+        desired = {"schemaVersion": 1, "permissions": [], "packages": []}
+        backup = self.fixture_root / "backup"
+
+        actions = managed_state.reconcile_install(
+            previous, desired, self.agent_dir, backup, dry_run=False
+        )
+
+        self.assertFalse(owned.exists())
+        self.assertEqual(
+            (backup / "permissions" / "owned.ts").read_text(encoding="utf-8"),
+            "owned\n",
+        )
+        self.assertEqual(modified.read_text(encoding="utf-8"), "after\n")
+        self.assertTrue(any("modified" in action for action in actions))
+        self.assertTrue(any("package" in action for action in actions))
+
+    def test_reconcile_dry_run_does_not_mutate_owned_state(self) -> None:
+        target = self.agent_dir / "permissions" / "stale.ts"
+        target.parent.mkdir()
+        target.write_text("owned\n", encoding="utf-8")
+        previous = {
+            "schemaVersion": 1,
+            "permissions": [{
+                "source": "/source/stale.ts",
+                "target": str(target),
+                "sha256": managed_state.sha256_file(target),
+            }],
+        }
+        backup = self.fixture_root / "backup"
+
+        actions = managed_state.reconcile_install(
+            previous,
+            {"schemaVersion": 1, "permissions": []},
+            self.agent_dir,
+            backup,
+            dry_run=True,
+        )
+
+        self.assertTrue(target.exists())
+        self.assertFalse(backup.exists())
+        self.assertTrue(any(action.startswith("DRY-RUN:") for action in actions))
+
+    def test_write_receipt_is_atomic_json_with_private_mode(self) -> None:
+        path = self.agent_dir / "harness" / ".managed-state.json"
+        path.parent.mkdir()
+        path.write_text("old\n", encoding="utf-8")
+        path.chmod(0o644)
+        original_inode = path.stat().st_ino
+        state = self.complete_receipt()
+
+        managed_state.write_receipt(path, state)
+
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), state)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertNotEqual(path.stat().st_ino, original_inode)
+        self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
+
+    def test_apply_uninstall_keep_mcp_flag_preserves_exact_server(self) -> None:
+        definition = {
+            "url": "https://mcp.context7.com/mcp",
+            "lifecycle": "lazy",
+        }
+        mcp_path = self.agent_dir / "mcp.json"
+        mcp_path.write_text(
+            json.dumps({"mcpServers": {"context7": definition}}) + "\n",
+            encoding="utf-8",
+        )
+        receipt_path = self.agent_dir / "harness" / ".managed-state.json"
+        managed_state.write_receipt(
+            receipt_path,
+            self.complete_receipt(
+                mcp=[{"name": "context7", "definition": definition}]
+            ),
+        )
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            result = managed_state.main([
+                "apply-uninstall",
+                "--harness-root", str(ROOT),
+                "--agent-dir", str(self.agent_dir),
+                "--backup-dir", str(self.fixture_root / "backup"),
+                "--keep-mcp",
+            ])
+
+        self.assertEqual(result, 0, output.getvalue())
+        self.assertEqual(
+            json.loads(mcp_path.read_text(encoding="utf-8")),
+            {"mcpServers": {"context7": definition}},
+        )
+        self.assertIn("keeping MCP configuration", output.getvalue())
+        retained = managed_state.load_receipt(receipt_path, self.agent_dir)
+        self.assertIsNotNone(retained)
+        assert retained is not None
+        self.assertEqual(retained["mcp"], [{"name": "context7", "definition": definition}])
+        self.assertTrue(all(not retained[key] for key in managed_state._COLLECTIONS if key != "mcp"))
+        self.assertEqual(stat.S_IMODE(receipt_path.stat().st_mode), 0o600)
 
 
 class InstallerBehaviorTests(unittest.TestCase):
@@ -1828,8 +3555,43 @@ class InstallerBehaviorTests(unittest.TestCase):
             INSTALLER, *args, agent_dir=agent_dir, pi_version=pi_version
         )
 
+    @staticmethod
+    def receipt_path(agent_dir: Path) -> Path:
+        return agent_dir / "harness" / ".managed-state.json"
+
+    def read_receipt(self, agent_dir: Path) -> dict:
+        return json.loads(self.receipt_path(agent_dir).read_text(encoding="utf-8"))
+
+    def write_receipt(self, agent_dir: Path, receipt: dict) -> None:
+        path = self.receipt_path(agent_dir)
+        path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+
     def run_uninstaller(self, *args: str, agent_dir: Path | None = None) -> subprocess.CompletedProcess[str]:
         return self.run_script(UNINSTALLER, *args, agent_dir=agent_dir)
+
+    @staticmethod
+    def snapshot_active_tree(agent_dir: Path) -> dict[str, tuple]:
+        snapshot: dict[str, tuple] = {}
+        for directory, directory_names, file_names in os.walk(
+            agent_dir, followlinks=False
+        ):
+            paths = [Path(directory)] + [
+                Path(directory) / name for name in directory_names + file_names
+            ]
+            for path in paths:
+                relative = str(path.relative_to(agent_dir)) or "."
+                metadata = path.lstat()
+                mode = stat.S_IMODE(metadata.st_mode)
+                if path.is_symlink():
+                    snapshot[relative] = ("link", mode, os.readlink(path))
+                elif path.is_file():
+                    snapshot[relative] = ("file", mode, path.read_bytes())
+                elif path.is_dir():
+                    snapshot[relative] = ("directory", mode)
+                else:
+                    snapshot[relative] = ("other", mode)
+        return snapshot
 
     def test_outdated_pi_is_rejected_before_any_package_is_installed(self) -> None:
         agent_dir = self.fixture_root / "outdated-agent"
@@ -1876,6 +3638,609 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertFalse(self.pi_log.exists(), result.stdout)
         self.assertIn("Would register skills path", result.stdout)
 
+    def test_install_writes_private_managed_state_receipt(self) -> None:
+        agent_dir = self.fixture_root / "receipt-agent"
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        receipt_path = self.receipt_path(agent_dir)
+        self.assertTrue(receipt_path.is_file(), result.stdout)
+        self.assertEqual(stat.S_IMODE(receipt_path.stat().st_mode), 0o600)
+        receipt = self.read_receipt(agent_dir)
+        self.assertEqual(receipt["schemaVersion"], 1)
+
+        installed_agent = Path(receipt["agentDir"])
+        expected_extensions = {
+            str(installed_agent / "extensions" / source.name)
+            for source in (ROOT / "extensions").iterdir()
+        }
+        self.assertEqual(
+            {entry["target"] for entry in receipt["extensions"]},
+            expected_extensions,
+        )
+        expected_permissions = {
+            str(installed_agent / "permissions" / source.relative_to(ROOT / "permissions"))
+            for source in (ROOT / "permissions").rglob("*")
+            if source.is_file() and source.suffix in (".js", ".ts")
+        }
+        self.assertEqual(
+            {entry["target"] for entry in receipt["permissions"]},
+            expected_permissions,
+        )
+        manifest = json.loads(RESOURCES.read_text(encoding="utf-8"))
+        expected_resources = {
+            str(installed_agent / "harness" / kind / entry["name"])
+            for kind in ("skills", "prompts")
+            for entry in manifest[kind]
+        }
+        self.assertEqual(
+            {entry["target"] for entry in receipt["resources"]},
+            expected_resources,
+        )
+        expected_managed_settings = {
+            (kind, str(agent_dir / "harness" / kind / entry["name"]))
+            for kind in ("skills", "prompts")
+            for entry in manifest[kind]
+        }
+
+        def setting_identity(entry: dict) -> tuple[str, object]:
+            value = entry["value"]
+            if isinstance(value, dict):
+                return entry["kind"], json.dumps(value, sort_keys=True)
+            return entry["kind"], value
+
+        self.assertTrue(
+            expected_managed_settings.issubset(
+                {setting_identity(entry) for entry in receipt["settings"]}
+            )
+        )
+
+        def all_keys(value: object) -> set[str]:
+            if isinstance(value, dict):
+                return set(value).union(
+                    *(all_keys(item) for item in value.values()),
+                )
+            if isinstance(value, list):
+                return set().union(*(all_keys(item) for item in value))
+            return set()
+
+        self.assertTrue({"headers", "env"}.isdisjoint(all_keys(receipt)))
+
+    def test_skip_mcp_does_not_adopt_exact_preexisting_server(self) -> None:
+        agent_dir = self.fixture_root / "skip-mcp-user-server-agent"
+        agent_dir.mkdir()
+        required = json.loads(REQUIRED_MCP.read_text(encoding="utf-8"))
+        mcp_path = agent_dir / "mcp.json"
+        mcp_path.write_text(json.dumps(required, indent=2) + "\n", encoding="utf-8")
+        before = mcp_path.read_bytes()
+
+        install = self.run_installer(
+            "--skip-packages", "--skip-mcp", agent_dir=agent_dir
+        )
+        self.assertEqual(install.returncode, 0, install.stdout)
+        self.assertEqual(self.read_receipt(agent_dir)["mcp"], [])
+        self.assertEqual(mcp_path.read_bytes(), before)
+
+        uninstall = self.run_uninstaller(agent_dir=agent_dir)
+        self.assertEqual(uninstall.returncode, 0, uninstall.stdout)
+        self.assertEqual(mcp_path.read_bytes(), before)
+        self.assertIn("context7", json.loads(mcp_path.read_text())["mcpServers"])
+
+    def test_skip_mcp_carries_forward_prior_receipt_provenance(self) -> None:
+        agent_dir = self.fixture_root / "skip-mcp-prior-receipt-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        prior_mcp = self.read_receipt(agent_dir)["mcp"]
+        mcp_path = agent_dir / "mcp.json"
+        modified = json.loads(mcp_path.read_text(encoding="utf-8"))
+        modified["mcpServers"]["context7"]["headers"] = {"fixture": "value"}
+        mcp_path.write_text(json.dumps(modified, indent=2) + "\n", encoding="utf-8")
+        before = mcp_path.read_bytes()
+
+        result = self.run_installer(
+            "--skip-packages", "--skip-mcp", agent_dir=agent_dir
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(mcp_path.read_bytes(), before)
+        self.assertEqual(self.read_receipt(agent_dir)["mcp"], prior_mcp)
+        self.assertNotIn("leaving modified mcp state", result.stdout)
+
+    def test_idempotent_rerun_does_not_change_receipt(self) -> None:
+        agent_dir = self.fixture_root / "idempotent-receipt-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        before = self.receipt_path(agent_dir).read_bytes()
+
+        second = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertEqual(self.receipt_path(agent_dir).read_bytes(), before)
+        self.assertFalse((agent_dir / "backups").exists(), second.stdout)
+
+    def test_update_reconciles_receipt_owned_stale_extension(self) -> None:
+        agent_dir = self.fixture_root / "stale-extension-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        stale_source = self.fixture_root / "obsolete-extension.ts"
+        stale_source.write_text("export default function obsolete() {}\n", encoding="utf-8")
+        receipt = self.read_receipt(agent_dir)
+        stale_target = (
+            Path(receipt["agentDir"]) / "extensions" / "obsolete-extension.ts"
+        )
+        stale_target.symlink_to(stale_source)
+        receipt["extensions"].append(
+            {"source": str(stale_source), "target": str(stale_target)}
+        )
+        self.write_receipt(agent_dir, receipt)
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(stale_target.exists())
+        self.assertFalse(stale_target.is_symlink())
+        backups = list(
+            (agent_dir / "backups").glob(
+                "harness-*/extensions/obsolete-extension.ts"
+            )
+        )
+        self.assertEqual(len(backups), 1, result.stdout)
+        self.assertTrue(backups[0].is_symlink())
+        self.assertEqual(os.readlink(backups[0]), str(stale_source))
+
+    def test_update_preserves_modified_stale_permission(self) -> None:
+        agent_dir = self.fixture_root / "modified-permission-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        receipt = self.read_receipt(agent_dir)
+        stale_target = (
+            Path(receipt["agentDir"]) / "permissions" / "obsolete-policy.ts"
+        )
+        stale_target.write_text("// receipt-owned\n", encoding="utf-8")
+        receipt["permissions"].append(
+            {
+                "source": str(self.fixture_root / "obsolete-policy.ts"),
+                "target": str(stale_target),
+                "sha256": hashlib.sha256(stale_target.read_bytes()).hexdigest(),
+            }
+        )
+        self.write_receipt(agent_dir, receipt)
+        stale_target.write_text("// user-modified\n", encoding="utf-8")
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(stale_target.read_text(encoding="utf-8"), "// user-modified\n")
+        self.assertIn("leaving modified permission state", result.stdout)
+        self.assertFalse(
+            list((agent_dir / "backups").glob("harness-*/permissions/obsolete-policy.ts")),
+            result.stdout,
+        )
+
+    def test_dry_run_reports_stale_state_without_mutation(self) -> None:
+        agent_dir = self.fixture_root / "dry-stale-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        stale_source = self.fixture_root / "dry-obsolete.ts"
+        stale_source.write_text("export default {}\n", encoding="utf-8")
+        receipt = self.read_receipt(agent_dir)
+        stale_target = Path(receipt["agentDir"]) / "extensions" / "dry-obsolete.ts"
+        stale_target.symlink_to(stale_source)
+        receipt["extensions"].append(
+            {"source": str(stale_source), "target": str(stale_target)}
+        )
+        self.write_receipt(agent_dir, receipt)
+        receipt_before = self.receipt_path(agent_dir).read_bytes()
+        link_before = os.readlink(stale_target)
+
+        result = self.run_installer(
+            "--dry-run", "--skip-packages", agent_dir=agent_dir
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue(stale_target.is_symlink())
+        self.assertEqual(os.readlink(stale_target), link_before)
+        self.assertEqual(self.receipt_path(agent_dir).read_bytes(), receipt_before)
+        self.assertFalse((agent_dir / "backups").exists(), result.stdout)
+        self.assertIn("DRY-RUN: Owned symlink state", result.stdout)
+        self.assertIn(str(self.receipt_path(agent_dir)), result.stdout)
+
+    def test_lexical_agent_alias_settings_backup_fails_before_mutation(self) -> None:
+        physical_parent = self.fixture_root / "physical-parent"
+        agent_dir = physical_parent / "agent"
+        agent_dir.mkdir(parents=True)
+        alias_parent = self.fixture_root / "alias-parent"
+        alias_parent.symlink_to(physical_parent, target_is_directory=True)
+        lexical_agent = alias_parent / "agent"
+
+        desired = managed_state.build_desired_state(ROOT, lexical_agent)
+        settings: dict[str, object] = {}
+        for entry in desired["settings"]:
+            value = entry["value"]
+            if isinstance(value, dict):
+                settings[entry["kind"]] = value
+            else:
+                settings.setdefault(entry["kind"], []).append(value)
+        settings.setdefault("skills", []).append(
+            str(lexical_agent / "harness" / "skills")
+        )
+        (agent_dir / "settings.json").write_text(
+            json.dumps(settings, indent=2) + "\n", encoding="utf-8"
+        )
+
+        outside = self.fixture_root / "outside-backups"
+        outside.mkdir()
+        (agent_dir / "backups").symlink_to(outside, target_is_directory=True)
+        before = self.snapshot_active_tree(agent_dir)
+
+        result = self.run_installer(agent_dir=lexical_agent)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("backup", result.stdout.lower())
+        self.assertFalse(self.pi_log.exists(), result.stdout)
+        self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_fresh_collision_backup_ancestry_fails_before_mutation(self) -> None:
+        for ancestry in ("symlink", "non-directory", "unwritable"):
+            with self.subTest(ancestry=ancestry):
+                agent_dir = self.fixture_root / f"fresh-collision-{ancestry}"
+                agent_dir.mkdir()
+                (agent_dir / "AGENTS.md").write_text("user owned\n", encoding="utf-8")
+                outside = self.fixture_root / f"fresh-outside-{ancestry}"
+                outside.mkdir()
+                backups = agent_dir / "backups"
+                if ancestry == "symlink":
+                    backups.symlink_to(outside, target_is_directory=True)
+                elif ancestry == "non-directory":
+                    backups.write_text("not a directory\n", encoding="utf-8")
+                else:
+                    backups.mkdir(mode=0o500)
+                before = self.snapshot_active_tree(agent_dir)
+
+                result = self.run_installer(agent_dir=agent_dir)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("backup", result.stdout.lower())
+                self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+                self.assertFalse(self.pi_log.exists(), result.stdout)
+                self.assertEqual(list(outside.iterdir()), [])
+
+    def test_legacy_pair_backup_ancestry_fails_before_mutation(self) -> None:
+        for ancestry in ("symlink", "non-directory", "unwritable"):
+            with self.subTest(ancestry=ancestry):
+                agent_dir = self.fixture_root / f"legacy-pair-{ancestry}"
+                extensions = agent_dir / "extensions"
+                extensions.mkdir(parents=True)
+                pair = extensions / "pair.ts"
+                pair.symlink_to(ROOT / "extensions" / "pair.ts")
+                outside = self.fixture_root / f"pair-outside-{ancestry}"
+                outside.mkdir()
+                backups = agent_dir / "backups"
+                if ancestry == "symlink":
+                    backups.symlink_to(outside, target_is_directory=True)
+                elif ancestry == "non-directory":
+                    backups.write_text("not a directory\n", encoding="utf-8")
+                else:
+                    backups.mkdir(mode=0o500)
+                before = self.snapshot_active_tree(agent_dir)
+
+                result = self.run_installer(agent_dir=agent_dir)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("backup", result.stdout.lower())
+                self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+                self.assertFalse(self.pi_log.exists(), result.stdout)
+                self.assertEqual(list(outside.iterdir()), [])
+
+    def test_known_pair_link_is_migrated_without_receipt(self) -> None:
+        known_agent = self.fixture_root / "known-pair-agent"
+        known_extensions = known_agent / "extensions"
+        known_extensions.mkdir(parents=True)
+        known_pair = known_extensions / "pair.ts"
+        known_pair.symlink_to(ROOT / "extensions" / "pair.ts")
+
+        known_result = self.run_installer("--skip-packages", agent_dir=known_agent)
+
+        self.assertEqual(known_result.returncode, 0, known_result.stdout)
+        self.assertFalse(known_pair.is_symlink())
+        backups = list(
+            (known_agent / "backups").glob("harness-*/extensions/pair.ts")
+        )
+        self.assertEqual(len(backups), 1, known_result.stdout)
+        self.assertTrue(backups[0].is_symlink())
+
+        foreign_agent = self.fixture_root / "foreign-pair-agent"
+        foreign_extensions = foreign_agent / "extensions"
+        foreign_extensions.mkdir(parents=True)
+        foreign_source = self.fixture_root / "foreign-pair.ts"
+        foreign_source.write_text("export default function foreign() {}\n", encoding="utf-8")
+        foreign_pair = foreign_extensions / "pair.ts"
+        foreign_pair.symlink_to(foreign_source)
+
+        foreign_result = self.run_installer("--skip-packages", agent_dir=foreign_agent)
+
+        self.assertEqual(foreign_result.returncode, 0, foreign_result.stdout)
+        self.assertTrue(foreign_pair.is_symlink())
+        self.assertEqual(os.readlink(foreign_pair), str(foreign_source))
+        self.assertIn("pair.ts", foreign_result.stdout)
+        self.assertIn("WARNING", foreign_result.stdout)
+
+    def test_removed_package_is_reported_not_uninstalled(self) -> None:
+        agent_dir = self.fixture_root / "removed-package-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        receipt = self.read_receipt(agent_dir)
+        receipt["packages"].append("npm:removed-package@1.0.0")
+        self.write_receipt(agent_dir, receipt)
+
+        result = self.run_installer(agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("REPORT: stale package pin", result.stdout)
+        calls = self.pi_log.read_text(encoding="utf-8").splitlines()
+        self.assertTrue(calls)
+        self.assertTrue(all(" remove " not in f" {call} " for call in calls), calls)
+        self.assertTrue(all(" uninstall " not in f" {call} " for call in calls), calls)
+
+    def test_skip_packages_does_not_require_pi(self) -> None:
+        agent_dir = self.fixture_root / "no-pi-agent"
+        command_dir = self.fixture_root / "no-pi-bin"
+        command_dir.mkdir()
+        for command in (
+            "bash",
+            "basename",
+            "cmp",
+            "cp",
+            "date",
+            "dirname",
+            "find",
+            "grep",
+            "ln",
+            "mkdir",
+            "python3",
+        ):
+            executable = shutil.which(command)
+            self.assertIsNotNone(executable, command)
+            (command_dir / command).symlink_to(executable)
+        self.assertIsNone(shutil.which("pi", path=str(command_dir)))
+        env = os.environ.copy()
+        env.update({"PATH": str(command_dir), "PI_AGENT_DIR": str(agent_dir)})
+
+        result = subprocess.run(
+            [str(INSTALLER), "--skip-packages", "--skip-mcp"],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue(self.receipt_path(agent_dir).is_file(), result.stdout)
+        self.assertNotIn("Validating Pi runtime", result.stdout)
+
+    def test_symlinked_extensions_parent_fails_before_any_mutation(self) -> None:
+        agent_dir = self.fixture_root / "symlinked-extensions-agent"
+        outside = self.fixture_root / "outside-extensions"
+        agent_dir.mkdir()
+        outside.mkdir()
+        extensions = agent_dir / "extensions"
+        extensions.symlink_to(outside, target_is_directory=True)
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("symlink", result.stdout)
+        self.assertTrue(extensions.is_symlink())
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(list(agent_dir.iterdir()), [extensions])
+        self.assertFalse(self.pi_log.exists(), result.stdout)
+
+    def test_symlinked_permissions_parent_fails_before_any_mutation(self) -> None:
+        agent_dir = self.fixture_root / "symlinked-permissions-agent"
+        outside = self.fixture_root / "outside-permissions"
+        agent_dir.mkdir()
+        outside.mkdir()
+        permissions = agent_dir / "permissions"
+        permissions.symlink_to(outside, target_is_directory=True)
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("symlink", result.stdout)
+        self.assertTrue(permissions.is_symlink())
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(list(agent_dir.iterdir()), [permissions])
+        self.assertFalse(self.pi_log.exists(), result.stdout)
+
+    def test_upgrade_replaces_a_harness_owned_model_override(self) -> None:
+        """An override this harness itself installed must be upgradable.
+
+        Dropping `maxTokens` from the manifest leaves every existing install
+        holding a value the new manifest does not declare. Preflight must
+        distinguish that — harness-owned, recorded verbatim in the receipt,
+        safe to replace — from a value the user chose, which is still a
+        conflict. Without this, shipping the change bricks every upgrade."""
+        agent_dir = self.fixture_root / "model-override-upgrade-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+
+        # Simulate the previous harness version: models.json and the receipt
+        # both carry the retired maxTokens value.
+        models_path = agent_dir / "models.json"
+        models = json.loads(models_path.read_text(encoding="utf-8"))
+        overrides = models["providers"]["openai"]["modelOverrides"]
+        retired = {"maxTokens": 50000, "contextWindow": 100000}
+        overrides["gpt-5.6-luna"] = dict(retired)
+        models_path.write_text(json.dumps(models, indent=2) + "\n", encoding="utf-8")
+
+        receipt = self.read_receipt(agent_dir)
+        for entry in receipt["models"]:
+            if entry["provider"] == "openai" and entry["model"] == "gpt-5.6-luna":
+                entry["value"] = dict(retired)
+        self.write_receipt(agent_dir, receipt)
+
+        second = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(second.returncode, 0, second.stdout)
+
+        final = json.loads(models_path.read_text(encoding="utf-8"))
+        installed = final["providers"]["openai"]["modelOverrides"]["gpt-5.6-luna"]
+        self.assertEqual(installed, {"contextWindow": 100000})
+        self.assertNotIn("maxTokens", installed)
+
+    def test_upgrade_replaces_a_harness_owned_object_setting(self) -> None:
+        """Same ownership rule as model overrides, for object settings.
+
+        Retuning the retry policy leaves every existing install holding the
+        previous value, which is not what the new manifest declares. Without
+        receipt-based ownership, changing any managed default in
+        settings-defaults.json bricks every upgrade."""
+        agent_dir = self.fixture_root / "settings-upgrade-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+
+        retired = {
+            "enabled": True,
+            "maxRetries": 4,
+            "baseDelayMs": 8000,
+            "provider": {"maxRetryDelayMs": 120000},
+        }
+        settings_path = agent_dir / "settings.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        settings["retry"] = dict(retired)
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+        receipt = self.read_receipt(agent_dir)
+        for entry in receipt["settings"]:
+            if entry["kind"] == "retry":
+                entry["value"] = dict(retired)
+        self.write_receipt(agent_dir, receipt)
+
+        second = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(second.returncode, 0, second.stdout)
+
+        declared = json.loads(
+            (ROOT / "config" / "settings-defaults.json").read_text(encoding="utf-8")
+        )["settings"]["retry"]
+        final = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(final["retry"], declared)
+
+    def test_upgrade_still_refuses_a_user_modified_object_setting(self) -> None:
+        """A retry policy the user tuned is still theirs."""
+        agent_dir = self.fixture_root / "settings-conflict-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+
+        chosen = {"enabled": True, "maxRetries": 99, "baseDelayMs": 1234}
+        settings_path = agent_dir / "settings.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        settings["retry"] = dict(chosen)
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+        second = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertNotEqual(second.returncode, 0, second.stdout)
+        self.assertIn("conflicts", second.stdout)
+        final = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(final["retry"], chosen)
+
+    def test_upgrade_still_refuses_a_user_modified_model_override(self) -> None:
+        """The upgrade path must not become a licence to overwrite users.
+
+        A value that matches neither the manifest nor the receipt was chosen
+        by someone, so preflight must still fail before mutating anything."""
+        agent_dir = self.fixture_root / "model-override-conflict-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+
+        models_path = agent_dir / "models.json"
+        models = json.loads(models_path.read_text(encoding="utf-8"))
+        chosen = {"contextWindow": 64000, "maxTokens": 8192}
+        models["providers"]["openai"]["modelOverrides"]["gpt-5.6-luna"] = dict(chosen)
+        models_path.write_text(json.dumps(models, indent=2) + "\n", encoding="utf-8")
+
+        second = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertNotEqual(second.returncode, 0, second.stdout)
+        self.assertIn("conflicts", second.stdout)
+        final = json.loads(models_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            final["providers"]["openai"]["modelOverrides"]["gpt-5.6-luna"], chosen
+        )
+
+    def test_reconciliation_preserves_original_settings_and_mcp_backups(self) -> None:
+        agent_dir = self.fixture_root / "original-config-backup-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        receipt = self.read_receipt(agent_dir)
+
+        stale_setting = str(self.fixture_root / "stale-owned-skill")
+        receipt["settings"].append({"kind": "skills", "value": stale_setting})
+        settings_path = agent_dir / "settings.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        missing_setting = next(
+            value
+            for value in settings["skills"]
+            if value.startswith(str(agent_dir / "harness" / "skills"))
+        )
+        settings["skills"].remove(missing_setting)
+        settings["skills"].append(stale_setting)
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+        stale_definition = {"url": "https://stale.invalid/mcp"}
+        receipt["mcp"].append({"name": "stale-owned", "definition": stale_definition})
+        mcp_path = agent_dir / "mcp.json"
+        mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
+        mcp["mcpServers"].pop("context7")
+        mcp["mcpServers"]["stale-owned"] = stale_definition
+        mcp_path.write_text(json.dumps(mcp, indent=2) + "\n", encoding="utf-8")
+        self.write_receipt(agent_dir, receipt)
+        original_settings = settings_path.read_bytes()
+        original_mcp = mcp_path.read_bytes()
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        settings_backups = list(
+            (agent_dir / "backups").glob("harness-*/settings.json")
+        )
+        mcp_backups = list((agent_dir / "backups").glob("harness-*/mcp.json"))
+        self.assertEqual(len(settings_backups), 1, result.stdout)
+        self.assertEqual(len(mcp_backups), 1, result.stdout)
+        self.assertEqual(settings_backups[0].read_bytes(), original_settings)
+        self.assertEqual(mcp_backups[0].read_bytes(), original_mcp)
+
+    def test_reconciliation_preflight_failure_precedes_packages_and_mutation(self) -> None:
+        agent_dir = self.fixture_root / "reconcile-preflight-agent"
+        first = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        receipt = self.read_receipt(agent_dir)
+        stale_source = self.fixture_root / "preflight-stale.ts"
+        stale_source.write_text("export default {}\n", encoding="utf-8")
+        stale_target = Path(receipt["agentDir"]) / "extensions" / "preflight-stale.ts"
+        stale_target.symlink_to(stale_source)
+        receipt["extensions"].append(
+            {"source": str(stale_source), "target": str(stale_target)}
+        )
+        self.write_receipt(agent_dir, receipt)
+        receipt_before = self.receipt_path(agent_dir).read_bytes()
+        settings_before = (agent_dir / "settings.json").read_bytes()
+        mcp_before = (agent_dir / "mcp.json").read_bytes()
+        (agent_dir / "backups").write_text("invalid backup ancestry\n", encoding="utf-8")
+
+        result = self.run_installer(agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("backup", result.stdout)
+        self.assertFalse(self.pi_log.exists(), result.stdout)
+        self.assertTrue(stale_target.is_symlink())
+        self.assertEqual(self.receipt_path(agent_dir).read_bytes(), receipt_before)
+        self.assertEqual((agent_dir / "settings.json").read_bytes(), settings_before)
+        self.assertEqual((agent_dir / "mcp.json").read_bytes(), mcp_before)
+
     def test_existing_skill_name_collision_is_reported_without_mutation(self) -> None:
         agent_dir = self.fixture_root / "collision-agent"
         external_skills = self.fixture_root / "external-skills"
@@ -1897,6 +4262,35 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertIn("'find-skills'", result.stdout)
         self.assertEqual(settings.read_text(encoding="utf-8"), original)
         self.assertFalse((agent_dir / "AGENTS.md").exists(), result.stdout)
+
+    def test_physically_equivalent_links_record_actual_raw_target(self) -> None:
+        for link_kind in ("relative", "alias"):
+            with self.subTest(link_kind=link_kind):
+                agent_dir = self.fixture_root / f"equivalent-link-{link_kind}"
+                agent_dir.mkdir()
+                target = agent_dir / "AGENTS.md"
+                if link_kind == "relative":
+                    raw_target = os.path.relpath(
+                        ROOT / "AGENTS.md", agent_dir.resolve(strict=False)
+                    )
+                else:
+                    alias = self.fixture_root / "checkout-alias"
+                    if not alias.exists():
+                        alias.symlink_to(ROOT, target_is_directory=True)
+                    raw_target = str(alias / "AGENTS.md")
+                target.symlink_to(raw_target)
+
+                install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+                self.assertEqual(install.returncode, 0, install.stdout)
+                self.assertEqual(os.readlink(target), raw_target)
+                self.assertEqual(
+                    self.read_receipt(agent_dir)["agents"][0]["source"], raw_target
+                )
+
+                uninstall = self.run_uninstaller(agent_dir=agent_dir)
+                self.assertEqual(uninstall.returncode, 0, uninstall.stdout)
+                self.assertFalse(target.exists(), uninstall.stdout)
+                self.assertFalse(target.is_symlink(), uninstall.stdout)
 
     def test_fresh_install_and_idempotent_rerun(self) -> None:
         agent_dir = self.fixture_root / "fresh-agent"
@@ -1939,6 +4333,21 @@ class InstallerBehaviorTests(unittest.TestCase):
         }
         self.assertTrue(expected_exclusions.issubset(settings["skills"]))
 
+        defaults = json.loads(
+            (ROOT / "config" / "settings-defaults.json").read_text(encoding="utf-8")
+        )["settings"]
+        for kind, value in defaults.items():
+            self.assertEqual(settings.get(kind), value, second.stdout)
+
+        model_defaults = json.loads(
+            (ROOT / "config" / "models-defaults.json").read_text(encoding="utf-8")
+        )["models"]
+        models = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
+        for provider, overrides in model_defaults.items():
+            installed = models["providers"][provider]["modelOverrides"]
+            for model, value in overrides.items():
+                self.assertEqual(installed.get(model), value, second.stdout)
+
         self.assertEqual(
             json.loads((agent_dir / "mcp.json").read_text(encoding="utf-8")),
             json.loads(REQUIRED_MCP.read_text(encoding="utf-8")),
@@ -1954,6 +4363,134 @@ class InstallerBehaviorTests(unittest.TestCase):
 
         backups = agent_dir / "backups"
         self.assertFalse(backups.exists(), "idempotent install unexpectedly created backups")
+
+    def test_model_and_settings_defaults_are_merged_and_owned(self) -> None:
+        agent_dir = self.fixture_root / "defaults-agent"
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        settings_manifest = json.loads(
+            (ROOT / "config" / "settings-defaults.json").read_text(encoding="utf-8")
+        )
+        settings = json.loads((agent_dir / "settings.json").read_text(encoding="utf-8"))
+        for kind, value in settings_manifest["settings"].items():
+            self.assertEqual(settings.get(kind), value, result.stdout)
+
+        models_manifest = json.loads(
+            (ROOT / "config" / "models-defaults.json").read_text(encoding="utf-8")
+        )
+        models = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
+        for provider, overrides in models_manifest["models"].items():
+            for model, value in overrides.items():
+                self.assertEqual(
+                    models["providers"][provider]["modelOverrides"].get(model),
+                    value,
+                    result.stdout,
+                )
+
+        receipt = self.read_receipt(agent_dir)
+        recorded = {
+            entry["kind"]: entry["value"]
+            for entry in receipt["settings"]
+            if entry["kind"] in settings_manifest["settings"]
+        }
+        self.assertEqual(recorded, settings_manifest["settings"])
+        recorded_models = {
+            (entry["provider"], entry["model"]): entry["value"]
+            for entry in receipt["models"]
+        }
+        expected_models = {
+            (provider, model): value
+            for provider, overrides in models_manifest["models"].items()
+            for model, value in overrides.items()
+        }
+        self.assertEqual(recorded_models, expected_models)
+
+    def test_conflicting_model_defaults_fail_before_mutation(self) -> None:
+        agent_dir = self.fixture_root / "conflict-agent"
+        agent_dir.mkdir()
+        (agent_dir / "models.json").write_text(
+            json.dumps({
+                "providers": {
+                    "openai": {
+                        "modelOverrides": {
+                            "gpt-5.6-luna": {"maxTokens": 99999}
+                        }
+                    }
+                }
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("conflicts with the harness default", result.stdout)
+        self.assertFalse((agent_dir / "AGENTS.md").exists(), result.stdout)
+        self.assertFalse(self.receipt_path(agent_dir).exists(), result.stdout)
+        self.assertFalse(self.pi_log.exists(), result.stdout)
+
+    def test_matching_defaults_are_accepted_unchanged(self) -> None:
+        agent_dir = self.fixture_root / "matching-agent"
+        agent_dir.mkdir()
+        settings_manifest = json.loads(
+            (ROOT / "config" / "settings-defaults.json").read_text(encoding="utf-8")
+        )
+        (agent_dir / "settings.json").write_text(
+            json.dumps(settings_manifest["settings"]) + "\n",
+            encoding="utf-8",
+        )
+        models_manifest = json.loads(
+            (ROOT / "config" / "models-defaults.json").read_text(encoding="utf-8")
+        )
+        (agent_dir / "models.json").write_text(
+            json.dumps({
+                "providers": {
+                    provider: {"modelOverrides": overrides}
+                    for provider, overrides in models_manifest["models"].items()
+                }
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_installer("--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        settings = json.loads((agent_dir / "settings.json").read_text(encoding="utf-8"))
+        for kind, value in settings_manifest["settings"].items():
+            self.assertEqual(settings.get(kind), value, result.stdout)
+        models = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
+        for provider, overrides in models_manifest["models"].items():
+            for model, value in overrides.items():
+                self.assertEqual(
+                    models["providers"][provider]["modelOverrides"][model],
+                    value,
+                    result.stdout,
+                )
+
+    def test_uninstall_removes_owned_defaults_and_preserves_modified(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-defaults-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+
+        models_path = agent_dir / "models.json"
+        models = json.loads(models_path.read_text(encoding="utf-8"))
+        models["providers"]["openai"]["modelOverrides"]["gpt-5.6-luna"]["maxTokens"] = 99999
+        models_path.write_text(json.dumps(models) + "\n", encoding="utf-8")
+
+        uninstall = self.run_uninstaller(agent_dir=agent_dir)
+        self.assertEqual(uninstall.returncode, 0, uninstall.stdout)
+
+        final_settings = json.loads((agent_dir / "settings.json").read_text(encoding="utf-8"))
+        self.assertNotIn("retry", final_settings, uninstall.stdout)
+        final_models = json.loads(models_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            final_models["providers"]["openai"]["modelOverrides"]["gpt-5.6-luna"]["maxTokens"],
+            99999,
+        )
+        backups = list((agent_dir / "backups").glob("harness-uninstall-*/settings.json"))
+        self.assertEqual(len(backups), 1, uninstall.stdout)
 
     def test_legacy_permission_symlinks_are_migrated_to_regular_files(self) -> None:
         agent_dir = self.fixture_root / "permission-link-agent"
@@ -2209,12 +4746,229 @@ class InstallerBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertTrue(modified.is_file(), result.stdout)
-        self.assertIn("leaving it in place", result.stdout)
+        self.assertIn("leaving modified permission state", result.stdout)
+        self.assertIn("leaving modified mcp state", result.stdout)
         installed_mcp = json.loads(mcp_file.read_text(encoding="utf-8"))
         self.assertIn("context7", installed_mcp["mcpServers"], result.stdout)
         self.assertFalse((agent_dir / "AGENTS.md").exists(), result.stdout)
-        self.assertFalse((agent_dir / "harness").exists(), result.stdout)
+        reduced = self.read_receipt(agent_dir)
+        self.assertEqual(len(reduced["permissions"]), 1)
+        self.assertEqual(len(reduced["mcp"]), 1)
+        self.assertTrue(self.receipt_path(agent_dir).is_file(), result.stdout)
+
+    def test_install_receipt_mode_drift_fails_before_mutation(self) -> None:
+        agent_dir = self.fixture_root / "install-mode-drift-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        self.receipt_path(agent_dir).chmod(0o644)
+        before = self.snapshot_active_tree(agent_dir)
+
+        result = self.run_installer(agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("mode must be 0600", result.stdout)
+        self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+        self.assertFalse(self.pi_log.exists(), result.stdout)
+
+    def test_uninstall_receipt_mode_drift_fails_before_mutation(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-mode-drift-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        self.receipt_path(agent_dir).chmod(0o640)
+        before = self.snapshot_active_tree(agent_dir)
+
+        result = self.run_uninstaller(agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("mode must be 0600", result.stdout)
+        self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+
+    def test_uninstall_receipt_preserves_retargeted_same_checkout_symlink(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-retargeted-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        agents_link = agent_dir / "AGENTS.md"
+        agents_link.unlink()
+        agents_link.symlink_to(ROOT / "README.md")
+
+        result = self.run_uninstaller(agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("leaving modified symlink state", result.stdout)
+        self.assertTrue(agents_link.is_symlink(), result.stdout)
+        self.assertEqual(os.readlink(agents_link), str(ROOT / "README.md"))
+        receipt = self.read_receipt(agent_dir)
+        self.assertEqual(receipt["agents"], [{
+            "source": str(ROOT / "AGENTS.md"),
+            "target": str(agents_link.parent.resolve(strict=False) / agents_link.name),
+        }])
+        self.assertEqual(stat.S_IMODE(self.receipt_path(agent_dir).stat().st_mode), 0o600)
+
+        second = self.run_uninstaller(agent_dir=agent_dir)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertTrue(agents_link.is_symlink(), second.stdout)
+        self.assertEqual(os.readlink(agents_link), str(ROOT / "README.md"))
+        self.assertTrue(self.receipt_path(agent_dir).is_file(), second.stdout)
+
+    def test_uninstall_keep_mcp_retains_reduced_receipt_for_later_cleanup(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-keep-mcp-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        definition = self.read_receipt(agent_dir)["mcp"]
+
+        first = self.run_uninstaller("--keep-mcp", agent_dir=agent_dir)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        self.assertTrue((agent_dir / "mcp.json").is_file(), first.stdout)
+        reduced = self.read_receipt(agent_dir)
+        self.assertEqual(reduced["mcp"], definition)
+        for collection in managed_state._COLLECTIONS:
+            if collection != "mcp":
+                self.assertEqual(reduced[collection], [], collection)
+
+        second = self.run_uninstaller(agent_dir=agent_dir)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertNotIn(
+            "context7",
+            json.loads((agent_dir / "mcp.json").read_text()).get("mcpServers", {}),
+        )
+        self.assertFalse(self.receipt_path(agent_dir).exists(), second.stdout)
+
+    def test_uninstall_without_receipt_uses_legacy_cleanup(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-receiptless-agent"
+        agent_dir.mkdir()
+        agents_link = agent_dir / "AGENTS.md"
+        agents_link.symlink_to(ROOT / "AGENTS.md")
+
+        result = self.run_uninstaller(agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("legacy cleanup remains required", result.stdout)
+        self.assertIn("Removed link", result.stdout)
+        self.assertFalse(agents_link.exists(), result.stdout)
+        self.assertFalse(agents_link.is_symlink(), result.stdout)
+
+    def test_receiptless_uninstall_backup_ancestry_fails_before_mutation(self) -> None:
+        for ancestry in ("symlink", "non-directory", "unwritable"):
+            with self.subTest(ancestry=ancestry):
+                agent_dir = self.fixture_root / f"receiptless-uninstall-{ancestry}"
+                agent_dir.mkdir()
+                agents_link = agent_dir / "AGENTS.md"
+                agents_link.symlink_to(ROOT / "AGENTS.md")
+                (agent_dir / "settings.json").write_text(
+                    json.dumps({"skills": [str(ROOT / "skills")]}) + "\n",
+                    encoding="utf-8",
+                )
+                outside = self.fixture_root / f"uninstall-outside-{ancestry}"
+                outside.mkdir()
+                backups = agent_dir / "backups"
+                if ancestry == "symlink":
+                    backups.symlink_to(outside, target_is_directory=True)
+                elif ancestry == "non-directory":
+                    backups.write_text("not a directory\n", encoding="utf-8")
+                else:
+                    backups.mkdir(mode=0o500)
+                before = self.snapshot_active_tree(agent_dir)
+
+                result = self.run_uninstaller(agent_dir=agent_dir)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("backup", result.stdout.lower())
+                self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+                self.assertEqual(list(outside.iterdir()), [])
+
+    def test_uninstall_invalid_settings_fails_before_any_mutation(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-invalid-settings-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        (agent_dir / "settings.json").write_text("not-json\n", encoding="utf-8")
+        before = self.snapshot_active_tree(agent_dir)
+
+        result = self.run_uninstaller(agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+
+    def test_uninstall_invalid_mcp_fails_before_any_mutation(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-invalid-mcp-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        (agent_dir / "mcp.json").write_text("not-json\n", encoding="utf-8")
+        before = self.snapshot_active_tree(agent_dir)
+
+        result = self.run_uninstaller(agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+
+    def test_incomplete_receipt_fails_install_and_uninstall_before_mutation(self) -> None:
+        agent_dir = self.fixture_root / "incomplete-receipt-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        self.write_receipt(agent_dir, {"schemaVersion": 1})
+        before = self.snapshot_active_tree(agent_dir)
+
+        reinstall = self.run_installer(agent_dir=agent_dir)
+        self.assertNotEqual(reinstall.returncode, 0, reinstall.stdout)
+        self.assertIn("missing required fields", reinstall.stdout)
+        self.assertEqual(self.snapshot_active_tree(agent_dir), before, reinstall.stdout)
+        self.assertFalse(self.pi_log.exists(), reinstall.stdout)
+
+        uninstall = self.run_uninstaller(agent_dir=agent_dir)
+        self.assertNotEqual(uninstall.returncode, 0, uninstall.stdout)
+        self.assertIn("missing required fields", uninstall.stdout)
+        self.assertEqual(self.snapshot_active_tree(agent_dir), before, uninstall.stdout)
+
+    def test_uninstall_invalid_receipt_fails_before_any_mutation(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-invalid-receipt-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        receipt = self.read_receipt(agent_dir)
+        receipt["schemaVersion"] = 999
+        self.write_receipt(agent_dir, receipt)
+        before = self.snapshot_active_tree(agent_dir)
+
+        result = self.run_uninstaller(agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.snapshot_active_tree(agent_dir), before, result.stdout)
+
+    def test_uninstall_receipt_removes_owned_resource_absent_from_current_manifest(self) -> None:
+        agent_dir = self.fixture_root / "uninstall-receipt-resource-agent"
+        install = self.run_installer("--skip-packages", agent_dir=agent_dir)
+        self.assertEqual(install.returncode, 0, install.stdout)
+        receipt = self.read_receipt(agent_dir)
+        stale_source = ROOT / "skills" / "core"
+        stale_target = (
+            Path(receipt["agentDir"]) / "harness" / "skills" / "receipt-only"
+        )
+        stale_target.symlink_to(stale_source, target_is_directory=True)
+        receipt["resources"].append(
+            {
+                "kind": "skills",
+                "name": "receipt-only",
+                "source": str(stale_source),
+                "target": str(stale_target),
+            }
+        )
+        self.write_receipt(agent_dir, receipt)
+
+        result = self.run_uninstaller(agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(stale_target.exists(), result.stdout)
+        resource_backups = list(
+            (agent_dir / "backups").glob(
+                "harness-uninstall-*/harness/skills/receipt-only"
+            )
+        )
+        self.assertEqual(len(resource_backups), 1, result.stdout)
+        self.assertTrue(resource_backups[0].is_symlink(), result.stdout)
+        receipt_backups = list(
+            (agent_dir / "backups").glob(
+                "harness-uninstall-*/harness/.managed-state.json"
+            )
+        )
+        self.assertEqual(len(receipt_backups), 1, result.stdout)
+        self.assertFalse(self.receipt_path(agent_dir).exists(), result.stdout)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

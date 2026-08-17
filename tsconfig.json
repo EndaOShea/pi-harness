@@ -1,0 +1,25 @@
+{
+  "//": [
+    "Type-check configuration for the harness's own TypeScript.",
+    "Run it through ./scripts/typecheck.sh, which supplies the one thing",
+    "that cannot be committed: where @thurstonsand/pi-permissions and",
+    "@earendil-works/pi-coding-agent happen to live on this machine.",
+    "Nothing is ever emitted; Pi's loader strips types at load time.",
+    "permissions/lib/*.js is resolved but not checked (checkJs false):",
+    "the matchers are plain JavaScript, exercised directly by the test",
+    "suite through Node rather than through the type system."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": false,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
+  },
+  "include": ["permissions/**/*.ts", "extensions/**/*.ts"]
+}

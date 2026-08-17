@@ -251,6 +251,45 @@ Implementation:
 
 - `npm:@narumitw/pi-usage@0.40.1`
 
+## Rate-limit Telemetry and Governor
+
+Purpose:
+
+- record every provider response's status, retry-after interval, and exposed
+  `x-ratelimit-*` headers to a shared daily log, so concurrent Pi processes
+  become visible to one another;
+- hold an outbound request when the estimated remaining token budget cannot
+  cover it, rather than letting it 429;
+- expose `/tpm`: session requests and 429s, the last-minute picture across
+  processes, recent retry-after intervals, estimated budget remaining, holds
+  taken, and current context usage.
+
+Usage rules:
+
+- Check `/tpm` before launching parallel model-heavy work and after any
+  rate-limit failure.
+- Tokens-per-minute breaches come from the *rate* of requests, not the size
+  of any one of them, so capping per-request tokens cannot prevent one.
+- The governor throttles only. It never rewrites a payload, never retries,
+  and fails open: absent evidence reads as a full bucket, holds are bounded
+  by `PI_TPM_MAX_WAIT_MS`, the abort signal cuts them short, and any internal
+  error passes the request through unmodified. Disable with
+  `PI_TPM_GOVERNOR=0`.
+- Records contain counts and timestamps only — never credentials or payload
+  content — and are pruned after 14 days.
+
+Forks: the budget is discovered from the provider's own
+`x-ratelimit-limit-tokens`, so no account tier is hard-coded. The declared
+per-model `contextWindow` in `config/models-defaults.json` is a payload
+choice; replace it with the models you actually use.
+
+Implementation:
+
+- `extensions/tpm-telemetry.ts`
+- `extensions/context-budget.ts` trims oversized `bash`/`grep`/`find`/`ls`
+  results before they enter context, scoped to rate-limited providers.
+- `config/settings-defaults.json`, `config/models-defaults.json`
+
 ## Permission Enforcement
 
 Purpose:

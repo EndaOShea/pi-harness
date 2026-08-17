@@ -68,6 +68,9 @@ HARNESS_ROOT="$(
 
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 SETTINGS_FILE="$PI_AGENT_DIR/settings.json"
+SETTINGS_DEFAULTS_FILE="$HARNESS_ROOT/config/settings-defaults.json"
+MODELS_FILE="$PI_AGENT_DIR/models.json"
+MODELS_DEFAULTS_FILE="$HARNESS_ROOT/config/models-defaults.json"
 PACKAGE_FILE="$HARNESS_ROOT/packages/pi-packages.txt"
 RESOURCE_MANIFEST="$HARNESS_ROOT/config/resources.json"
 REQUIRED_MCP_FILE="$HARNESS_ROOT/config/required-mcp.json"
@@ -92,6 +95,8 @@ TARGET_EXTENSIONS="$PI_AGENT_DIR/extensions"
 TARGET_PERMISSIONS="$PI_AGENT_DIR/permissions"
 TARGET_HARNESS_ROOT="$PI_AGENT_DIR/harness"
 TARGET_MCP_FILE="$PI_AGENT_DIR/mcp.json"
+MANAGED_STATE_HELPER="$HARNESS_ROOT/scripts/lib/managed_state.py"
+RECEIPT_FILE="$TARGET_HARNESS_ROOT/.managed-state.json"
 
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
 BACKUP_DIR="$PI_AGENT_DIR/backups/harness-$TIMESTAMP-$$"
@@ -115,6 +120,22 @@ warn() {
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
     exit 1
+}
+
+managed_state() {
+    python3 "$MANAGED_STATE_HELPER" "$@" \
+        --harness-root "$HARNESS_ROOT" \
+        --agent-dir "$PI_AGENT_DIR"
+}
+
+stat_mode() {
+    python3 - "$1" <<'PY'
+import stat
+import sys
+from pathlib import Path
+
+print(f"{stat.S_IMODE(Path(sys.argv[1]).stat().st_mode):o}")
+PY
 }
 
 on_error() {
@@ -273,10 +294,36 @@ PY
 }
 
 validate_settings_file() {
-    SETTINGS_FILE="$SETTINGS_FILE" python3 <<'PY'
+    SETTINGS_FILE="$SETTINGS_FILE" \
+    SETTINGS_DEFAULTS_FILE="$SETTINGS_DEFAULTS_FILE" \
+    RECEIPT_FILE="$RECEIPT_FILE" \
+        python3 <<'PY'
 import json
 import os
 from pathlib import Path
+
+
+def recorded_settings():
+    """Object settings this harness installed, per the managed-state receipt.
+
+    An installed value matching the receipt exactly is ours, so a manifest
+    change may replace it. Anything else was tuned by the user and is still
+    a conflict. Without this, retuning any managed default would fail every
+    existing installation's preflight.
+    """
+    receipt_path = Path(os.environ.get("RECEIPT_FILE", "")).expanduser()
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    owned = {}
+    for entry in receipt.get("settings", []):
+        if isinstance(entry, dict) and isinstance(entry.get("kind"), str):
+            owned[entry["kind"]] = entry.get("value")
+    return owned
+
+
+OWNED_SETTINGS = recorded_settings()
 
 path = Path(os.environ["SETTINGS_FILE"]).expanduser()
 if not path.exists():
@@ -294,6 +341,121 @@ for key in ("skills", "prompts"):
     value = settings.get(key)
     if value is not None and not isinstance(value, list):
         raise SystemExit(f"Expected settings key {key!r} to contain an array.")
+
+defaults_path = Path(os.environ["SETTINGS_DEFAULTS_FILE"])
+try:
+    defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Invalid settings defaults JSON in {defaults_path}: {exc}") from exc
+if not isinstance(defaults, dict) or defaults.get("schemaVersion") != 1:
+    raise SystemExit(f"Expected a schemaVersion 1 object in {defaults_path}.")
+declared = defaults.get("settings")
+if not isinstance(declared, dict) or not declared:
+    raise SystemExit(f"Expected a non-empty settings object in {defaults_path}.")
+for kind, value in declared.items():
+    if not isinstance(value, dict) or not value:
+        raise SystemExit(f"Settings default {kind!r} must be a non-empty object.")
+    installed = settings.get(kind)
+    if installed is not None and not isinstance(installed, dict):
+        raise SystemExit(f"Expected settings key {kind!r} to contain an object.")
+    if (
+        installed is not None
+        and installed != value
+        and installed != OWNED_SETTINGS.get(kind)
+    ):
+        raise SystemExit(
+            f"Existing settings key {kind!r} in {path} conflicts with the "
+            "harness rate-limit defaults. Merge your overrides into the "
+            "harness manifest or resolve the conflict before installation."
+        )
+PY
+}
+
+validate_models_file() {
+    MODELS_FILE="$MODELS_FILE" \
+    MODELS_DEFAULTS_FILE="$MODELS_DEFAULTS_FILE" \
+    RECEIPT_FILE="$RECEIPT_FILE" \
+        python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["MODELS_FILE"]).expanduser()
+defaults_path = Path(os.environ["MODELS_DEFAULTS_FILE"])
+
+
+def recorded_overrides():
+    """Model overrides this harness installed, per the managed-state receipt.
+
+    An installed value matching the receipt exactly is ours, so a manifest
+    change may replace it. Anything else was chosen by the user and is a
+    conflict. Without this, retiring a declared key would fail every
+    existing installation's preflight.
+    """
+    receipt_path = Path(os.environ.get("RECEIPT_FILE", "")).expanduser()
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    owned = {}
+    for entry in receipt.get("models", []):
+        if not isinstance(entry, dict):
+            continue
+        provider, model = entry.get("provider"), entry.get("model")
+        if isinstance(provider, str) and isinstance(model, str):
+            owned[(provider, model)] = entry.get("value")
+    return owned
+
+
+OWNED = recorded_overrides()
+try:
+    defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Invalid models defaults JSON in {defaults_path}: {exc}") from exc
+if not isinstance(defaults, dict) or defaults.get("schemaVersion") != 1:
+    raise SystemExit(f"Expected a schemaVersion 1 object in {defaults_path}.")
+declared = defaults.get("models")
+if not isinstance(declared, dict) or not declared:
+    raise SystemExit(f"Expected a non-empty models object in {defaults_path}.")
+
+if not path.exists():
+    raise SystemExit(0)
+try:
+    models = json.loads(path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Cannot use invalid JSON in {path}: {exc}") from exc
+if not isinstance(models, dict):
+    raise SystemExit(f"Expected a JSON object in {path}.")
+providers = models.get("providers")
+if providers is None:
+    raise SystemExit(0)
+if not isinstance(providers, dict):
+    raise SystemExit(f"Expected models key 'providers' in {path} to contain an object.")
+
+for provider, overrides in declared.items():
+    if not isinstance(overrides, dict) or not overrides:
+        raise SystemExit(f"Models default {provider!r} must be a non-empty object.")
+    provider_obj = providers.get(provider)
+    if provider_obj is not None and not isinstance(provider_obj, dict):
+        raise SystemExit(f"Expected provider {provider!r} in {path} to contain an object.")
+    installed = (
+        provider_obj.get("modelOverrides") if isinstance(provider_obj, dict) else None
+    )
+    if installed is not None and not isinstance(installed, dict):
+        raise SystemExit(
+            f"Expected provider {provider!r} modelOverrides in {path} to contain an object."
+        )
+    for model, value in overrides.items():
+        if not isinstance(value, dict) or not value:
+            raise SystemExit(f"Models default {provider}/{model} must be a non-empty object.")
+        if isinstance(installed, dict) and model in installed and installed[model] != value:
+            if installed[model] == OWNED.get((provider, model)):
+                continue
+            raise SystemExit(
+                f"Existing model override {provider}/{model} in {path} conflicts "
+                "with the harness default. Merge your overrides into the "
+                "harness manifest or resolve the conflict before installation."
+            )
 PY
 }
 
@@ -520,12 +682,27 @@ validate_repository() {
         fail "Missing package manifest: $PACKAGE_FILE"
     [[ -f "$RESOURCE_MANIFEST" ]] ||
         fail "Missing resource manifest: $RESOURCE_MANIFEST"
+    [[ -f "$SETTINGS_DEFAULTS_FILE" ]] ||
+        fail "Missing settings defaults manifest: $SETTINGS_DEFAULTS_FILE"
+    [[ -f "$MODELS_DEFAULTS_FILE" ]] ||
+        fail "Missing models defaults manifest: $MODELS_DEFAULTS_FILE"
+    [[ -f "$MANAGED_STATE_HELPER" ]] ||
+        fail "Missing managed-state helper: $MANAGED_STATE_HELPER"
 
     load_resource_manifest
     validate_settings_file
+    validate_models_file
     validate_package_manifest
     validate_required_mcp
     audit_existing_skill_collisions
+    if ((SKIP_MCP)); then
+        managed_state preflight-install --skip-mcp
+        managed_state preflight-reconcile-install \
+            --backup-dir "$BACKUP_DIR" --skip-mcp
+    else
+        managed_state preflight-install
+        managed_state preflight-reconcile-install --backup-dir "$BACKUP_DIR"
+    fi
 
     if directory_has_typescript_files "$SOURCE_PERMISSIONS"; then
         grep -Eq \
@@ -594,8 +771,12 @@ install_required_mcp() {
     if [[ -f "$TARGET_MCP_FILE" ]]; then
         ensure_backup_dir
         mkdir -p "$(dirname "$BACKUP_DIR/mcp.json")"
-        cp -a "$TARGET_MCP_FILE" "$BACKUP_DIR/mcp.json"
-        info "Pi MCP configuration backup:"
+        if path_exists "$BACKUP_DIR/mcp.json"; then
+            info "Original Pi MCP configuration already preserved at:"
+        else
+            cp -a "$TARGET_MCP_FILE" "$BACKUP_DIR/mcp.json"
+            info "Pi MCP configuration backup:"
+        fi
         info "  $BACKUP_DIR/mcp.json"
     fi
 
@@ -670,6 +851,45 @@ backup_target() {
         info "Preserved existing resource at:"
     fi
     info "  $destination"
+}
+
+reconcile_legacy_pair_extension() {
+    local target="$TARGET_EXTENSIONS/pair.ts"
+    local former_source="$HARNESS_ROOT/extensions/pair.ts"
+
+    path_exists "$target" || return 0
+    if [[ -L "$target" ]] &&
+        [[ "$(canonical_path "$target")" == "$(canonical_path "$former_source")" ]]; then
+        backup_target "$target" "extensions/pair.ts"
+        return 0
+    fi
+
+    warn "Leaving foreign legacy extension in place: $target"
+}
+
+reconcile_managed_state() {
+    log "Reconciling managed state"
+    local args=(reconcile-install --backup-dir "$BACKUP_DIR")
+    ((DRY_RUN)) && args+=(--dry-run)
+    ((SKIP_MCP)) && args+=(--skip-mcp)
+
+    local output
+    output="$(managed_state "${args[@]}")" || {
+        local status=$?
+        [[ -n "$output" ]] && printf '%s\n' "$output"
+        return "$status"
+    }
+    [[ -n "$output" ]] && printf '%s\n' "$output"
+
+    if ((DRY_RUN)); then
+        if [[ "$output" == *"DRY-RUN: Owned "* ]]; then
+            BACKUP_PLANNED=1
+        fi
+    elif [[ -d "$BACKUP_DIR" ]]; then
+        BACKUP_CREATED=1
+    fi
+
+    reconcile_legacy_pair_extension
 }
 
 link_managed_resource() {
@@ -843,6 +1063,7 @@ settings_need_update() {
     SETTINGS_FILE="$SETTINGS_FILE" \
     HARNESS_ROOT="$HARNESS_ROOT" \
     RESOURCE_MANIFEST="$RESOURCE_MANIFEST" \
+    SETTINGS_DEFAULTS_FILE="$SETTINGS_DEFAULTS_FILE" \
     TARGET_HARNESS_ROOT="$TARGET_HARNESS_ROOT" \
         python3 <<'PY'
 import json
@@ -852,6 +1073,9 @@ from pathlib import Path
 settings_path = Path(os.environ["SETTINGS_FILE"]).expanduser()
 root = Path(os.environ["HARNESS_ROOT"]).resolve()
 manifest = json.loads(Path(os.environ["RESOURCE_MANIFEST"]).read_text(encoding="utf-8"))
+defaults = json.loads(
+    Path(os.environ["SETTINGS_DEFAULTS_FILE"]).read_text(encoding="utf-8")
+)["settings"]
 target_root = Path(os.environ["TARGET_HARNESS_ROOT"]).expanduser()
 settings = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
 
@@ -868,6 +1092,9 @@ for entry in manifest.get("skillExclusions", []):
     expected = f"-{Path(entry['path']).expanduser().resolve(strict=False)}"
     if expected not in settings.get("skills", []):
         raise SystemExit(10)
+for kind, value in defaults.items():
+    if settings.get(kind) != value:
+        raise SystemExit(10)
 raise SystemExit(0)
 PY
 }
@@ -875,12 +1102,16 @@ PY
 backup_settings_file() {
     [[ -f "$SETTINGS_FILE" ]] || return 0
     ensure_backup_dir
-    if ((DRY_RUN)); then
-        run cp -a "$SETTINGS_FILE" "$BACKUP_DIR/settings.json"
+    if path_exists "$BACKUP_DIR/settings.json"; then
+        info "Original Pi settings already preserved at:"
     else
-        cp -a "$SETTINGS_FILE" "$BACKUP_DIR/settings.json"
+        if ((DRY_RUN)); then
+            run cp -a "$SETTINGS_FILE" "$BACKUP_DIR/settings.json"
+        else
+            cp -a "$SETTINGS_FILE" "$BACKUP_DIR/settings.json"
+        fi
+        info "Pi settings backup:"
     fi
-    info "Pi settings backup:"
     info "  $BACKUP_DIR/settings.json"
 }
 
@@ -910,6 +1141,7 @@ merge_resource_settings() {
         planned_changes="$(
             SETTINGS_FILE="$SETTINGS_FILE" \
             RESOURCE_MANIFEST="$RESOURCE_MANIFEST" \
+            SETTINGS_DEFAULTS_FILE="$SETTINGS_DEFAULTS_FILE" \
             TARGET_HARNESS_ROOT="$TARGET_HARNESS_ROOT" \
                 python3 <<'PY'
 import json
@@ -918,6 +1150,9 @@ from pathlib import Path
 
 settings_path = Path(os.environ["SETTINGS_FILE"]).expanduser()
 manifest = json.loads(Path(os.environ["RESOURCE_MANIFEST"]).read_text(encoding="utf-8"))
+defaults = json.loads(
+    Path(os.environ["SETTINGS_DEFAULTS_FILE"]).read_text(encoding="utf-8")
+)["settings"]
 target_root = Path(os.environ["TARGET_HARNESS_ROOT"]).expanduser()
 settings = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
 
@@ -933,6 +1168,10 @@ for entry in manifest.get("skillExclusions", []):
     value = str(Path(entry["path"]).expanduser().resolve(strict=False))
     if f"-{value}" not in existing_skills:
         print(f"exclude\tskills\t{value}")
+
+for kind in sorted(defaults):
+    if kind not in settings:
+        print(f"default\t{kind}")
 PY
         )" || fail "Dry-run settings planning failed."
 
@@ -945,6 +1184,8 @@ PY
                 info "Would register $kind path: $value"
             elif [[ "$action" == "exclude" ]]; then
                 info "Would exclude external duplicate skill path from Pi: $value"
+            elif [[ "$action" == "default" ]]; then
+                info "Would set harness default settings key: $kind"
             fi
         done <<<"$planned_changes"
         return 0
@@ -956,7 +1197,9 @@ PY
     SETTINGS_FILE="$SETTINGS_FILE" \
     HARNESS_ROOT="$HARNESS_ROOT" \
     RESOURCE_MANIFEST="$RESOURCE_MANIFEST" \
+    SETTINGS_DEFAULTS_FILE="$SETTINGS_DEFAULTS_FILE" \
     TARGET_HARNESS_ROOT="$TARGET_HARNESS_ROOT" \
+    RECEIPT_FILE="$RECEIPT_FILE" \
         python3 <<'PY'
 import json
 import os
@@ -964,9 +1207,29 @@ import stat
 import tempfile
 from pathlib import Path
 
+
+def recorded_settings():
+    """Object settings this harness installed, per the receipt. See preflight."""
+    receipt_path = Path(os.environ.get("RECEIPT_FILE", "")).expanduser()
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    owned = {}
+    for entry in receipt.get("settings", []):
+        if isinstance(entry, dict) and isinstance(entry.get("kind"), str):
+            owned[entry["kind"]] = entry.get("value")
+    return owned
+
+
+OWNED_SETTINGS = recorded_settings()
+
 settings_path = Path(os.environ["SETTINGS_FILE"]).expanduser()
 root = Path(os.environ["HARNESS_ROOT"]).resolve()
 manifest = json.loads(Path(os.environ["RESOURCE_MANIFEST"]).read_text(encoding="utf-8"))
+defaults = json.loads(
+    Path(os.environ["SETTINGS_DEFAULTS_FILE"]).read_text(encoding="utf-8")
+)["settings"]
 target_root = Path(os.environ["TARGET_HARNESS_ROOT"]).expanduser()
 settings_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -998,6 +1261,13 @@ for entry in manifest.get("skillExclusions", []):
 if skills:
     settings["skills"] = skills
 
+for kind, value in defaults.items():
+    # Absent: install it. Present but exactly what we recorded last time:
+    # ours to replace, so a retuned default reaches existing installs.
+    # Anything else is the user's and preflight has already allowed it.
+    if kind not in settings or settings[kind] == OWNED_SETTINGS.get(kind):
+        settings[kind] = value
+
 with tempfile.NamedTemporaryFile(
     mode="w",
     encoding="utf-8",
@@ -1013,6 +1283,162 @@ with tempfile.NamedTemporaryFile(
 temporary_path.chmod(mode)
 os.replace(temporary_path, settings_path)
 print(f"Updated {settings_path}")
+PY
+}
+
+models_need_update() {
+    MODELS_FILE="$MODELS_FILE" \
+    MODELS_DEFAULTS_FILE="$MODELS_DEFAULTS_FILE" \
+        python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+models_path = Path(os.environ["MODELS_FILE"]).expanduser()
+defaults = json.loads(
+    Path(os.environ["MODELS_DEFAULTS_FILE"]).read_text(encoding="utf-8")
+)["models"]
+models = json.loads(models_path.read_text(encoding="utf-8")) if models_path.exists() else {}
+providers = models.get("providers")
+if not isinstance(providers, dict):
+    raise SystemExit(10)
+for provider, overrides in defaults.items():
+    provider_obj = providers.get(provider)
+    installed = (
+        provider_obj.get("modelOverrides") if isinstance(provider_obj, dict) else None
+    )
+    for model, value in overrides.items():
+        if not isinstance(installed, dict) or installed.get(model) != value:
+            raise SystemExit(10)
+raise SystemExit(0)
+PY
+}
+
+backup_models_file() {
+    [[ -f "$MODELS_FILE" ]] || return 0
+    ensure_backup_dir
+    if path_exists "$BACKUP_DIR/models.json"; then
+        info "Original Pi models already preserved at:"
+    else
+        if ((DRY_RUN)); then
+            run cp -a "$MODELS_FILE" "$BACKUP_DIR/models.json"
+        else
+            cp -a "$MODELS_FILE" "$BACKUP_DIR/models.json"
+        fi
+        info "Pi models backup:"
+    fi
+    info "  $BACKUP_DIR/models.json"
+}
+
+merge_models_defaults() {
+    log "Applying harness model overrides"
+
+    local update_required=0
+    if models_need_update; then
+        update_required=0
+    else
+        local status=$?
+        if [[ "$status" -eq 10 ]]; then
+            update_required=1
+        else
+            return "$status"
+        fi
+    fi
+
+    if ((update_required == 0)); then
+        info "Pi models already contain every harness model override."
+        return 0
+    fi
+
+    if ((DRY_RUN)); then
+        backup_models_file
+        info "Would apply harness model overrides to:"
+        info "  $MODELS_FILE"
+        return 0
+    fi
+
+    mkdir -p "$PI_AGENT_DIR"
+    backup_models_file
+
+    MODELS_FILE="$MODELS_FILE" \
+    MODELS_DEFAULTS_FILE="$MODELS_DEFAULTS_FILE" \
+    RECEIPT_FILE="$RECEIPT_FILE" \
+        python3 <<'PY'
+import json
+import os
+import stat
+import tempfile
+from pathlib import Path
+
+models_path = Path(os.environ["MODELS_FILE"]).expanduser()
+defaults = json.loads(
+    Path(os.environ["MODELS_DEFAULTS_FILE"]).read_text(encoding="utf-8")
+)["models"]
+models_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def recorded_overrides():
+    """Overrides this harness installed, per the receipt. See preflight."""
+    receipt_path = Path(os.environ.get("RECEIPT_FILE", "")).expanduser()
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    owned = {}
+    for entry in receipt.get("models", []):
+        if not isinstance(entry, dict):
+            continue
+        provider, model = entry.get("provider"), entry.get("model")
+        if isinstance(provider, str) and isinstance(model, str):
+            owned[(provider, model)] = entry.get("value")
+    return owned
+
+
+OWNED = recorded_overrides()
+
+if models_path.exists():
+    models = json.loads(models_path.read_text(encoding="utf-8"))
+    mode = stat.S_IMODE(models_path.stat().st_mode)
+else:
+    models = {}
+    mode = 0o600
+
+providers = models.get("providers")
+if not isinstance(providers, dict):
+    providers = {}
+    models["providers"] = providers
+
+for provider, overrides in defaults.items():
+    provider_obj = providers.get(provider)
+    if not isinstance(provider_obj, dict):
+        provider_obj = {}
+        providers[provider] = provider_obj
+    installed = provider_obj.get("modelOverrides")
+    if not isinstance(installed, dict):
+        installed = {}
+        provider_obj["modelOverrides"] = installed
+    for model, value in overrides.items():
+        # Absent: install it. Present but exactly what we recorded last time:
+        # ours to replace, so a retired key does not linger forever. Anything
+        # else belongs to the user and preflight has already allowed it.
+        if model not in installed or installed[model] == OWNED.get((provider, model)):
+            installed[model] = value
+
+with tempfile.NamedTemporaryFile(
+    mode="w",
+    encoding="utf-8",
+    dir=models_path.parent,
+    prefix=f".{models_path.name}.",
+    suffix=".tmp",
+    delete=False,
+) as handle:
+    json.dump(models, handle, indent=2, ensure_ascii=False)
+    handle.write("\n")
+    temporary_path = Path(handle.name)
+
+temporary_path.chmod(mode)
+os.replace(temporary_path, models_path)
+print(f"Updated {models_path}")
 PY
 }
 
@@ -1082,6 +1508,10 @@ validate_installation() {
     python3 -m json.tool "$SETTINGS_FILE" >/dev/null ||
         fail "Pi settings file is not valid JSON: $SETTINGS_FILE"
     settings_need_update || fail "Pi settings do not contain every curated resource path."
+    [[ -f "$MODELS_FILE" ]] || fail "Pi models file was not created."
+    python3 -m json.tool "$MODELS_FILE" >/dev/null ||
+        fail "Pi models file is not valid JSON: $MODELS_FILE"
+    models_need_update || fail "Pi models do not contain every harness model override."
 
     if ((SKIP_MCP == 0)); then
         [[ -f "$TARGET_MCP_FILE" ]] ||
@@ -1098,6 +1528,22 @@ validate_installation() {
         info "Required MCP servers: valid"
     fi
     info "Permission hooks: valid"
+}
+
+write_managed_state_receipt() {
+    log "Recording managed state"
+    if ((DRY_RUN)); then
+        info "Would write managed-state receipt at:"
+        info "  $RECEIPT_FILE"
+        return 0
+    fi
+
+    local args=(write-receipt)
+    ((SKIP_MCP)) && args+=(--skip-mcp)
+    managed_state "${args[@]}"
+    [[ -f "$RECEIPT_FILE" ]] || fail "Managed-state receipt was not created."
+    [[ "$(stat_mode "$RECEIPT_FILE")" == "600" ]] ||
+        fail "Managed-state receipt mode is not 0600."
 }
 
 print_summary() {
@@ -1137,13 +1583,16 @@ main() {
     validate_repository
     run mkdir -p "$PI_AGENT_DIR"
     install_packages
+    reconcile_managed_state
     install_global_agents_file
     install_resources
     install_permission_hooks
     install_extensions
     install_required_mcp
     merge_resource_settings
+    merge_models_defaults
     validate_installation
+    write_managed_state_receipt
     print_summary
 }
 

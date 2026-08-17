@@ -31,6 +31,8 @@ jobs:
         run: |
           npm install --global @earendil-works/pi-coding-agent@0.84.1
           pi install npm:@thurstonsand/pi-permissions@0.9.0
+      - name: Install exact type-checking toolchain
+        run: npm install --global typescript@5.7.2 @types/node@24.13.3
       - name: Install ShellCheck on macOS
         if: runner.os == 'macOS'
         run: command -v shellcheck >/dev/null || brew install shellcheck
