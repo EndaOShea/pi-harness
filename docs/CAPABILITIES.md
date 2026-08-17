@@ -55,11 +55,22 @@ Usage rules:
 
 Canonical source:
 
-- Vendored `.pi/skills/impeccable` tree, currently declaring version `4.0.4`.
-- Provenance and the full local-tree hash are recorded in
-  `config/third-party-skills.json`.
+- Vendored `.pi/skills/impeccable` tree, currently declaring version `4.1.1`.
+- Provenance, the reviewed capability notes, and the full local-tree hash are
+  recorded in `config/third-party-skills.json`.
 - Update checks stage immutable `skill-vX.Y.Z` release archives through
   `scripts/check-impeccable.py`; an update never writes the active tree.
+
+Network behaviour:
+
+- `scripts/concept-seed.mjs` makes one outbound GET to
+  `https://impeccable.style/api/roll` when seeding a concept. It sends scope,
+  mode, grain, platform, a random seed and a re-roll counter — no project
+  files, prompts, or conversation — and falls back to a degraded local roll if
+  the call fails. `IMPECCABLE_API_URL` redirects or disables it.
+- `permissions/confirm-egress.ts` does not gate this call: it gates shell
+  transfer programs, not Node scripts. Treat the environment variable as the
+  control point when a task must stay offline.
 
 ## Subagents
 
@@ -356,9 +367,12 @@ Usage rules:
   `curl http://127.0.0.1:1234/v1/models` (LM Studio) when a model is
   missing from `/model`.
 - After pulling or downloading a new model, restart Pi or run `/reload`.
-- Model metadata registered by discovery is conservative (32k context
-  assumption, zero cost); operators needing precise per-model settings
-  use Pi's native `~/.pi/agent/models.json`, which takes precedence.
+- Discovery probes each model's real context length — Ollama's `/api/ps` for
+  the window the server is actually honoring, LM Studio's `/api/v0/models` —
+  and registers that. A model the probe cannot cover (for Ollama, one that is
+  not currently loaded) falls back to a 32k placeholder, and cost is always
+  registered as zero. Operators needing precise per-model settings use Pi's
+  native `~/.pi/agent/models.json`, which takes precedence.
 
 Implementation:
 

@@ -3,6 +3,24 @@
 All notable harness changes are recorded here. The project does not create a
 release tag automatically; tagging remains an explicit maintainer action.
 
+## Unreleased
+
+- refreshed the Impeccable provenance the `skill-v4.1.1` adoption left behind.
+  `THIRD_PARTY_NOTICES.md` and `docs/CAPABILITIES.md` still named `4.0.4` and
+  the 4.0.4 commit, and the staged-comparison example in `README.md` still
+  passed `--release skill-v4.0.4` — an argument an operator copies and types,
+  so a stale tag there re-downloads the superseded release. Both documents now
+  also record the skill's one outbound call to `impeccable.style/api/roll`,
+  the `IMPECCABLE_API_URL` control point, and the fact that
+  `confirm-egress.ts` does not match it: it gates shell transfer programs
+  rather than node scripts, so the call is recorded rather than enforced;
+- corrected the local-model discovery description in `docs/CAPABILITIES.md`,
+  which still called registered metadata "conservative (32k context
+  assumption)" after `extensions/local-models.ts` began probing the real
+  window — Ollama's `/api/ps` for what the server is actually honoring, LM
+  Studio's `/api/v0/models`. 32k is now only the fallback for a model the
+  probe cannot cover.
+
 ## 0.1.0-rc.7 - 2026-08-17
 
 - adopted Impeccable `skill-v4.1.1` (from `skill-v4.0.4`): 57 changed files,

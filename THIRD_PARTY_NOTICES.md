@@ -37,15 +37,21 @@ https://github.com/upstash/context7/blob/master/LICENSE
 - License: Apache License 2.0
 - Vendored path: `.pi/skills/impeccable`
 
-The local tree declares skill version `4.0.4`. Upstream release tag
-`skill-v4.0.4` and commit
-`9a949fb543d44cfb406f61bcab99d95d7f12cf1d` are recorded in
+The local tree declares skill version `4.1.1`. Upstream release tag
+`skill-v4.1.1` and commit
+`5a149f3fdb1b5793f10567233b1dcab98fc305fd` are recorded in
 `config/third-party-skills.json`; the local tree remains pinned by its content
 hash. The staged checker has verified the vendored tree byte-identical to the
 upstream release archive.
 
+The vendored tree contacts one upstream service: `scripts/concept-seed.mjs`
+issues a single GET to `https://impeccable.style/api/roll` and fails closed to
+a local roll when it is unreachable. Set `IMPECCABLE_API_URL` to redirect or
+disable it. The request carries only scope, mode, grain, platform, a random
+seed and a re-roll counter.
+
 Upstream release:
-https://github.com/pbakaus/impeccable/releases/tag/skill-v4.0.4
+https://github.com/pbakaus/impeccable/releases/tag/skill-v4.1.1
 
 Apache License 2.0 text:
 https://www.apache.org/licenses/LICENSE-2.0.txt
