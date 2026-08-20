@@ -863,6 +863,19 @@ const NET_PROGRAMS = new Set([
   "nc", "ncat", "netcat", "socat", "scp", "sftp", "ssh",
 ]);
 
+/**
+ * An rsync operand naming a remote host, by rsync's own rule: a colon
+ * before any slash makes the operand remote, whether or not a user is
+ * given. The previous form required `user@host:` and let the equally
+ * valid `host:/dest` transfer off the machine ungated.
+ *
+ * Leading `-` excludes options, and excluding `=` and `/` before the colon
+ * keeps `--out-format=%f:%l` and a local path that merely contains a colon
+ * (`src/a:b`) from matching. `host::module` daemon syntax matches on its
+ * first colon.
+ */
+const RSYNC_REMOTE_TARGET = /^[^-\/=][^\/=]*:/;
+
 const LOCAL_URL = /^https?:\/\/(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])(?::\d+)?(?:\/|$)/i;
 const CURL_SHORT_OPTIONS_WITH_VALUES = new Set([
   "A", "b", "c", "d", "D", "e", "E", "F", "H", "K", "m", "o",
@@ -1119,7 +1132,7 @@ export function findEgressCommands(command) {
       }
       if (program === "rsync") {
         if (normalizedTokens.some((token) =>
-          /^[^\/=][^=]*@[^=]*:/.test(token) || token.startsWith("rsync://")
+          RSYNC_REMOTE_TARGET.test(token) || token.startsWith("rsync://")
         )) {
           findings.push({ program, reason: "remote file transfer" });
         }

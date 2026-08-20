@@ -3,6 +3,7 @@ import {
   request,
 } from "@thurstonsand/pi-permissions";
 
+import { logPermissionRequest } from "./lib/audit.ts";
 import { findDestructiveFallbacks } from "./lib/destructive-patterns.js";
 
 const approvalGuidance =
@@ -26,6 +27,16 @@ export default function permissions(api) {
             return;
           }
 
+          // Every `name` is a constant defined in lib/destructive-patterns.js
+          // ("xargs deletion", "dd overwrite"), never derived from the matched
+          // command text, so the joined identifier is safe to audit — the same
+          // argument confirm-deletions.ts makes for its rule strings.
+          logPermissionRequest({
+            policy: "indirect deletion approval",
+            toolName: "bash",
+            rule: fallbacks.map(({ name }) => name).join(","),
+            decision: "request",
+          });
           return request({
             guidance:
               `${approvalGuidance}\n\nDetected fallback patterns:\n` +

