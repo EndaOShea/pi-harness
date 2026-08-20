@@ -5,6 +5,32 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- added a "Rate limits and throughput" section to `AGENTS.md`. The repository
+  already shipped the TPM governor, `/tpm`, and both configuration defaults,
+  but the contract never said how an agent should behave under a contended
+  budget: size a fanout against the provider's TPM rather than against the
+  task, keep subagent briefs bounded because a roaming child re-sends
+  everything it gathers, split roles across models since budgets are
+  per-model, and narrow a trimmed query rather than re-running it. Provider
+  caching does not relieve TPM — cached input still counts at full rate;
+- added a reference-code convention to the contract's reporting rules: a
+  report carrying three or more findings, decisions, options, risks,
+  questions or actions labels each one (`F1`, `D1`, `O1`, `R1`, `Q1`, `A1`)
+  so a later message can act on one by name instead of re-quoting it. The
+  threshold is the whole design — coding a two-item answer is overhead
+  without a payoff. Subagents label behind a prefix the *parent* assigns in
+  the brief (`S1-F1`), because self-chosen prefixes collide the moment two
+  agents run in parallel, and the parent preserves the prefix when merging
+  rather than renumbering, keeping every claim traceable to the agent that
+  produced it. Codes are conversation-scoped and barred from commit
+  messages, changelog entries, documentation and code comments: a durable
+  artifact that says "fixes `R2`" has lost the finding it was pointing at;
+- sharpened the contract's verification rule to scale the check to what
+  changed. Prose gets the targeted guard covering that prose and nothing
+  more; the full suite is for structural change — executable code, installer
+  or CI behaviour, manifests, or a refactor crossing module boundaries;
+- documented `AGENTS.override.md` (Pi 0.84+) as the supported way to scope a
+  deviation to one directory instead of forking the global contract;
 - added an `installed-entry` CI job that runs the real
   `scripts/install.sh` into an isolated agent directory and then drives Pi
   headlessly through it. Every other test exercises the installer against
