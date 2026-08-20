@@ -5,6 +5,12 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- brought `README.md` back in line with the three changes that landed after it
+  was last touched: `AGENTS.override.md` as the per-directory way to scope a
+  deviation, the restored private-reference guard named by its list and file
+  and described as reading `git ls-files` rather than the working tree, and
+  the `PI_AGENT_DIR`/`PI_CODING_AGENT_DIR` distinction beside the preview
+  command that uses the first of them;
 - restored `test_no_private_reference_markers_in_tracked_files` and the
   `PRIVATE_REFERENCE_MARKERS` list, which `README.md` and `docs/FORKING.md`
   had both been promising since it disappeared. The guard shipped in

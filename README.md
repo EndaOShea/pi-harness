@@ -140,7 +140,10 @@ Instructions embedded in them are never executed.
 authentication headers, and private endpoints live outside Git. Private
 headers added to an installed MCP entry survive later harness runs without
 being committed or overwritten. A validation test rejects known private
-reference markers; extend that list in your fork with markers of your own.
+reference markers, reading `git ls-files` rather than the working tree so it
+checks exactly what a push would publish; extend `PRIVATE_REFERENCE_MARKERS`
+in `tests/test_harness.py` with your own hostnames, addresses, and internal
+names.
 
 **Decisions are auditable.** Pi's session log records what ran, but not which
 policy fired, what rule matched, or how the request resolved — so an incident
@@ -171,7 +174,9 @@ Restart Pi, then confirm the result with `pi config`, `/permissions`, and
 
 ## Managed configuration
 
-- `AGENTS.md` is the global operating contract.
+- `AGENTS.md` is the global operating contract. Pi 0.84+ also reads a
+  per-directory `AGENTS.override.md`, which is the supported way to scope a
+  deviation to one project instead of forking the contract.
 - `packages/pi-packages.txt` contains exact Pi package versions.
 - `config/resources.json` is the allowlist of globally exposed skills and
   prompt directories.
@@ -314,6 +319,13 @@ PI_AGENT_DIR=/tmp/pi-harness-preview \
 
 A dry run does not create the target directory, invoke `pi install`, move
 existing resources, or write settings.
+
+`PI_AGENT_DIR` is the harness's own variable and controls only where the
+installer writes. Pi reads `PI_CODING_AGENT_DIR`, so running Pi against an
+isolated profile requires exporting both at the same path; setting only
+`PI_AGENT_DIR` installs correctly while Pi keeps loading its default profile,
+and the policies under test silently never load. See
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Install
 
