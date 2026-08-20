@@ -5,6 +5,20 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- restored `test_no_private_reference_markers_in_tracked_files` and the
+  `PRIVATE_REFERENCE_MARKERS` list, which `README.md` and `docs/FORKING.md`
+  had both been promising since it disappeared. The guard shipped in
+  `0.1.0-rc.4` and was dropped in the rc.8 cycle by the commit that replaced
+  this suite wholesale with the upstream one; that commit lists what it
+  deliberately removed — the eval instrument, undeclared protected
+  directories — and never mentions this, so it went as collateral rather
+  than by decision. The gap mattered more than an ordinary missing test:
+  both documents told a forker that committing their own hostnames and IP
+  addresses was mechanically prevented, and for two releases it was not.
+  The guard reads `git ls-files` rather than the working tree, so it checks
+  exactly what a push would publish, and it skips itself, since the file
+  defining the markers necessarily contains them. Verified by planting the
+  placeholder marker in a tracked file and confirming the failure;
 - corrected the `PI_AGENT_DIR` guidance in both scripts' help output and in
   `docs/DEPLOYMENT.md`. It is the harness's own variable and Pi does not read
   it; running Pi against an isolated profile also needs `PI_CODING_AGENT_DIR`

@@ -45,6 +45,15 @@ def minimum_pi_version() -> str:
     assert match is not None, "MINIMUM_PI_VERSION missing from install.sh"
     return match.group(1)
 
+
+# Strings that must never appear in tracked files: private hostnames, IP
+# addresses, and internal service names. Forks should replace the placeholder
+# with their own real markers (see docs/FORKING.md); the placeholder keeps the
+# guard exercised without publishing anything private.
+PRIVATE_REFERENCE_MARKERS: tuple[str, ...] = (
+    "REPLACE-WITH-YOUR-PRIVATE-HOSTNAME.example",
+)
+
 PI_AGENT_NPM_DIR = Path(
     os.environ.get("PI_AGENT_NPM_DIR", str(Path.home() / ".pi" / "agent" / "npm"))
 )
@@ -2267,6 +2276,34 @@ assert(held >= 250, 'second request held by the first claim, held ' + held + 'ms
                 assert_native_windows_documentation_contract(
                     self,
                     defensive_documentation + " " + claim,
+                )
+
+    def test_no_private_reference_markers_in_tracked_files(self) -> None:
+        """Private infrastructure must never reach a public fork.
+
+        The guard reads tracked files rather than the working tree, so it
+        catches exactly what a push would publish, and skips itself: this
+        file necessarily contains the markers it searches for.
+        """
+        tracked = subprocess.run(
+            ["git", "ls-files"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            check=True,
+        ).stdout.splitlines()
+        self.assertTrue(tracked, "expected a git repository with tracked files")
+        this_file = Path(__file__).resolve()
+        for relative in tracked:
+            path = ROOT / relative
+            if not path.is_file() or path.resolve() == this_file:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for marker in PRIVATE_REFERENCE_MARKERS:
+                self.assertNotIn(
+                    marker,
+                    text,
+                    f"{relative} contains the private reference marker {marker!r}",
                 )
 
     def test_harness_document_links_resolve_locally(self) -> None:
