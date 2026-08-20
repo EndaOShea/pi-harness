@@ -129,9 +129,21 @@ can still act outside the tree; for hard isolation, run Pi in a container.
 **Outbound transmission.** `permissions/confirm-egress.ts` gates the
 exfiltration counterpart of secret reads: commands that send data off the
 machine — curl/wget with data-carrying flags or mutating HTTP methods,
-`scp`/`sftp`/`nc`/`socat`, rsync to a remote target, and `git push` — require
-per-call approval naming the destination. Requests to localhost stay free so
-development servers and the local model router work without prompts.
+`scp`/`sftp`/`nc`/`socat`, rsync to a remote target, `git push`, and the
+upload subcommands of already-authenticated CLIs (`gh gist create`,
+`gh release upload`, `aws s3 cp`/`sync`/`mv`, `gcloud storage`/`gsutil`,
+`az storage blob upload`, `rclone copy`/`sync`/`move`) — require per-call
+approval naming the destination. Only the upload subcommands match, and only
+when the destination operand names a remote, so reads and downloads such as
+`aws s3 cp s3://bucket/f .` stay free; gating every invocation of these tools
+would spend approval attention on status checks, which is how a gate stops
+being read. Requests to localhost stay free so development servers and the
+local model router work without prompts.
+
+This layer matters most where the secret-read policy cannot help. That policy
+gates secret-*shaped* paths, so a file the agent assembled itself — a database
+dump, a scratch export — is not secret-shaped and passes it; the transmission
+is the only point at which such a file is still gateable.
 
 **Untrusted content.** Web pages, file contents, and tool output are data.
 Instructions embedded in them are never executed.

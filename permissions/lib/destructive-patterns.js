@@ -303,6 +303,21 @@ export const DESTRUCTIVE_FALLBACK_PATTERNS = [
       /\b(?:bash|sh|zsh|dash|ksh)\b[^\n;&|]*\s-[a-zA-Z]*c\b[\s\S]*\b(?:rm|rmdir|unlink|shred)\b/,
   },
   {
+    // The `-c` sibling of "nested shell deletion": a pipeline whose final
+    // stage is a bare shell executes whatever the earlier stage printed,
+    // so `echo 'rm -rf /' | sh` deletes without ever naming rm in command
+    // position. Only deletion text VISIBLE in the command matches -- a
+    // fetched script (`curl ... | sh`) is opaque here and is left to the
+    // egress policy, which gates the fetch itself.
+    //
+    // The lookbehind keeps the word-boundary from firing inside `--rm`
+    // (docker) or `confirm`, either of which would otherwise turn an
+    // ordinary pipeline into a prompt.
+    name: "pipeline into shell",
+    pattern:
+      /(?<![-\w])(?:rm|rmdir|unlink|shred)\b[^\n]*\|\s*(?:sudo\s+)?(?:(?:command|env|exec)\s+)*(?:bash|sh|zsh|dash|ksh)\b/,
+  },
+  {
     name: "xargs deletion",
     pattern: /\bxargs\b[^\n;&|]*(?:\brm\b|\brmdir\b|\bunlink\b|\bshred\b)/,
   },

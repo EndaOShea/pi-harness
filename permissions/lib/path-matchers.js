@@ -864,6 +864,77 @@ const NET_PROGRAMS = new Set([
 ]);
 
 /**
+ * Upload subcommands of authenticated CLIs.
+ *
+ * These ship on developer machines already holding credentials, so they
+ * are a shorter route off the machine than curl. Only the upload
+ * subcommands are listed: gating every `aws` or `gh` invocation would
+ * spend approval attention on reads and status checks, which is how a
+ * gate stops being read.
+ *
+ * `remote` exists because direction matters -- `aws s3 cp s3://b/f .` is
+ * a download. Where it is set, the LAST operand must name a remote, which
+ * is the destination for every command listed. Where it is absent the
+ * subcommand itself already fixes the direction (`gist create`,
+ * `release upload`, `blob upload`).
+ */
+const CLI_UPLOAD_COMMANDS = [
+  { program: "gh", runs: [["gist", "create"], ["release", "upload"]] },
+  {
+    program: "aws",
+    runs: [["s3", "cp"], ["s3", "sync"], ["s3", "mv"], ["s3api", "put-object"]],
+    remote: /^s3:\/\//i,
+  },
+  {
+    program: "gcloud",
+    runs: [["storage", "cp"], ["storage", "rsync"], ["storage", "mv"]],
+    remote: /^gs:\/\//i,
+  },
+  {
+    program: "gsutil",
+    runs: [["cp"], ["rsync"], ["mv"]],
+    remote: /^gs:\/\//i,
+  },
+  {
+    program: "az",
+    runs: [["storage", "blob", "upload"], ["storage", "blob", "upload-batch"]],
+  },
+  {
+    program: "rclone",
+    runs: [["copy"], ["sync"], ["move"], ["copyto"], ["moveto"]],
+    // rclone names a remote `name:path`, not a URI.
+    remote: /^[A-Za-z0-9_-]+:/,
+  },
+];
+
+/**
+ * Match an authenticated-CLI upload, returning its rule identifier.
+ *
+ * Options are dropped rather than positionally parsed, and the
+ * subcommand is sought as a contiguous run anywhere in what remains, so
+ * a global option carrying a value (`aws --profile prod s3 cp ...`) does
+ * not shift the subcommand out of view.
+ */
+function findCliUpload(program, tokens) {
+  const words = tokens.slice(1).filter((token) => !token.startsWith("-"));
+  for (const entry of CLI_UPLOAD_COMMANDS) {
+    if (entry.program !== program) continue;
+    for (const run of entry.runs) {
+      const present = words.some((_, index) =>
+        run.every((word, offset) => words[index + offset] === word)
+      );
+      if (!present) continue;
+      if (!entry.remote) return `${program} ${run.join(" ")}`;
+      const destination = words.at(-1);
+      if (destination && entry.remote.test(destination)) {
+        return `${program} ${run.join(" ")}`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * An rsync operand naming a remote host, by rsync's own rule: a colon
  * before any slash makes the operand remote, whether or not a user is
  * given. The previous form required `user@host:` and let the equally
@@ -1138,6 +1209,12 @@ export function findEgressCommands(command) {
         }
         continue;
       }
+      const cliUpload = findCliUpload(program, normalizedTokens);
+      if (cliUpload) {
+        findings.push({ program: cliUpload, reason: "authenticated CLI upload" });
+        continue;
+      }
+
       if (program !== "curl" && program !== "wget" && program !== "wget2") {
         continue;
       }

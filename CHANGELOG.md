@@ -5,6 +5,39 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- gated the authenticated-CLI upload channels in `findEgressCommands`.
+  `gh`, `aws`, `gcloud`/`gsutil`, `az` and `rclone` ship on developer
+  machines already holding credentials, which makes them a shorter route
+  off the machine than curl, and none of them was matched: `gh gist create
+  dump.sql` and `aws s3 cp dump.sql s3://bucket/` both ran unprompted.
+  This is the one gap the secret-read policy could not backstop, because
+  that layer gates secret-*shaped* paths and a file the agent assembled
+  itself is not one — transmission is the last point at which such a file
+  is still gateable. Only upload subcommands are listed, and where the
+  subcommand does not itself fix the direction the last operand must name
+  a remote, so `aws s3 cp s3://bucket/f .`, `aws s3 ls` and `gh pr list`
+  stay free: gating every invocation of these tools would spend approval
+  attention on status checks, which is how a gate stops being read.
+  Options are dropped rather than positionally parsed and the subcommand
+  is sought as a contiguous run in what remains, so a global option
+  carrying a value (`aws --profile prod s3 cp …`) does not shift the
+  subcommand out of view. Sixteen cases were added, six of them the
+  download and read shapes that must not match;
+- closed the pipe-into-shell route past the indirect-deletion matcher.
+  `bash -c 'rm -rf x'` was gated as "nested shell deletion", but its
+  sibling `echo 'rm -rf /' | sh` was not: the pattern required a `-c`
+  flag, and a pipeline hands the shell its script on stdin instead. The
+  new "pipeline into shell" pattern matches a visible deletion word
+  followed by a pipe into a bare `sh`/`bash`/`zsh`/`dash`/`ksh`, through
+  an optional `sudo` and any number of `command`/`env`/`exec` wrappers.
+  A lookbehind keeps the deletion word from matching inside `--rm` or
+  `confirm`, either of which would otherwise turn `docker run --rm x | sh`
+  into a prompt and spend approval attention on nothing. Only deletion
+  text visible in the command matches: `curl … | sh` is opaque to any
+  lexical matcher, and the fetch it depends on is already the egress
+  policy's to gate, so this does not pretend to cover it. Six cases were
+  added, three of them the false-positive shapes;
+
 - closed the audit log's blind spot on indirect deletion. Four of the five
   installed permission policies recorded a `request` row as they returned a
   decision; `permissions/destructive-patterns.js` did not, so interpreter,
