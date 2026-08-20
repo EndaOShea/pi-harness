@@ -5,6 +5,33 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- added `/approvals`, which reads the audit log back as approval-gate
+  load. Every gate in this harness is approval *assistance* rather than
+  isolation, so the way the layer actually fails is not an evaded matcher
+  but an operator who has approved two hundred prompts and stopped
+  reading — and that risk was documented while being entirely unmeasured,
+  which is the wrong pair. The audit log already held every number needed
+  to see it happening. The command reports gates raised this session and
+  today across processes, a breakdown by policy and by matched rule, how
+  they resolved, and the approval rate, warning above twenty gates at a
+  ninety per cent or higher rate and naming the policy raising most of
+  them. The rate is the headline rather than the count, because a gate
+  approved essentially every time has stopped carrying information whether
+  it fired five times or five hundred, and the by-policy breakdown is what
+  says which rule to narrow. It lives in `extensions/audit-log.ts` rather
+  than in `/tpm`: that command is the rate-limit dashboard, and this is the
+  audit extension's own data. Two limits are printed in the output because
+  they bound what the numbers may claim — it counts gates *raised* rather
+  than prompts a human saw, since policies are evaluated independently and
+  one tool call can raise several, and the approved figure is derived by
+  subtracting rejections, policy blocks and headless auto-blocks from
+  gates raised rather than by pairing a `request` record to an `outcome`
+  record, that correlation being by adjacency and already documented as
+  unreliable. `registerCommand` is declared optional on the extension's
+  minimal API so a caller that only wires events stays valid, the read of
+  today's file is byte-capped so a runaway session cannot stall the
+  report, and `PI_AUDIT=0` silences the report along with the writing;
+
 - gated the authenticated-CLI upload channels in `findEgressCommands`.
   `gh`, `aws`, `gcloud`/`gsutil`, `az` and `rclone` ship on developer
   machines already holding credentials, which makes them a shorter route

@@ -3724,6 +3724,108 @@ console.log('ok');
         self.assertEqual(rec["toolName"], "bash")
         self.assertIn("credential file (.aws/credentials)", rec["rule"])
 
+    def test_approvals_command_reports_gate_load_and_flags_fatigue(self) -> None:
+        """/approvals turns the audit log into the one number the permission
+        layer cannot otherwise show: how often a gate is approved.
+
+        Approval fatigue is this layer's real failure mode -- it is approval
+        assistance, not isolation, so an operator approving on reflex defeats
+        it without any matcher being evaded. The command must count gates by
+        policy, derive the approval rate WITHOUT pairing request records to
+        outcome records (that correlation is by adjacency and unreliable),
+        and say so."""
+        script = """
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+
+process.env.PI_AGENT_DIR = mkdtempSync(join(tmpdir(), 'approvals-'));
+delete process.env.PI_AUDIT;
+const { default: register } = await import('./extensions/audit-log.ts');
+const { logPermissionRequest } = await import('./permissions/lib/audit.ts');
+
+const handlers = new Map();
+let command;
+register({
+  on: (event, handler) => handlers.set(event, handler),
+  registerCommand: (name, spec) => {
+    assert(name === 'approvals', 'command is /approvals, got ' + name);
+    command = spec;
+  },
+});
+assert(command && typeof command.handler === 'function', 'command registered');
+
+await handlers.get('session_start')({}, { hasUI: true, model: { provider: 'p', id: 'm' } });
+for (let i = 0; i < 24; i += 1) {
+  logPermissionRequest({
+    policy: 'workspace scope approval', toolName: 'bash',
+    rule: 'outside-workspace-path', decision: 'request',
+  });
+}
+for (let i = 0; i < 3; i += 1) {
+  logPermissionRequest({
+    policy: 'protected path and secret access approval', toolName: 'read',
+    rule: 'credential store (.ssh)', decision: 'request',
+  });
+}
+const endTool = (id, isError, text) => handlers.get('tool_execution_end')({
+  toolCallId: id, toolName: 'bash', isError,
+  result: { content: [{ type: 'text', text }] },
+}, {});
+for (let i = 0; i < 26; i += 1) await endTool('t' + i, false, 'ok');
+await endTool('tx', true, 'Blocked by user via permission hook x');
+
+const out = command.handler(null, {});
+assert(/gates raised: 27 this session/.test(out), 'session gate count: ' + out);
+assert(/workspace scope approval 24/.test(out), 'by-policy breakdown: ' + out);
+assert(/outside-workspace-path 24/.test(out), 'top rules: ' + out);
+assert(/~26 approved, 1 rejected/.test(out), 'resolution counts: ' + out);
+assert(/approval rate: ~96%/.test(out), 'derived rate: ' + out);
+assert(/not by pairing/.test(out), 'states the derivation is not pairing: ' + out);
+assert(/WARNING/.test(out), 'fatigue warning above threshold: ' + out);
+assert(/counts gates raised, not prompts seen/.test(out),
+  'states gates != prompts seen: ' + out);
+
+// Below the threshold the warning must NOT fire: a handful of gates in a
+// session is the layer working, not fatigue.
+process.env.PI_AGENT_DIR = mkdtempSync(join(tmpdir(), 'approvals-quiet-'));
+const quiet = new Map();
+let quietCommand;
+const { default: registerQuiet } = await import('./extensions/audit-log.ts?v=quiet');
+registerQuiet({
+  on: (event, handler) => quiet.set(event, handler),
+  registerCommand: (_name, spec) => { quietCommand = spec; },
+});
+await quiet.get('session_start')({}, { hasUI: true, model: {} });
+logPermissionRequest({
+  policy: 'direct deletion approval', toolName: 'bash',
+  rule: 'rm', decision: 'request',
+});
+const quietOut = quietCommand.handler(null, {});
+assert(/gates raised: 1 this session/.test(quietOut), 'quiet count: ' + quietOut);
+assert(!/WARNING/.test(quietOut), 'no warning below threshold: ' + quietOut);
+
+// The kill switch silences the report as well as the writing.
+process.env.PI_AUDIT = '0';
+const offOut = quietCommand.handler(null, {});
+assert(/audit logging is off/.test(offOut), 'honours PI_AUDIT=0: ' + offOut);
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def test_every_permission_policy_records_an_audit_request(self) -> None:
         """Every installed policy module must call logPermissionRequest.
 

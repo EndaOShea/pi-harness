@@ -188,6 +188,22 @@ headless transcripts must not be read as walls of user rejections. Files
 rotate daily and are pruned after `PI_AUDIT_KEEP_DAYS` (default 30) days;
 `PI_AUDIT=0` disables writing from both sources.
 
+`/approvals` reads that log back as approval-gate load: gates raised this
+session and today, a breakdown by policy and matched rule, how they
+resolved, and the approval rate. Above twenty gates at a ninety per cent
+or higher approval rate it warns, and names the policy raising most of
+them. The rate is the number worth watching — a gate approved essentially
+every time has stopped carrying information regardless of how often it
+fires, and that is this layer's real failure mode, since it is approval
+assistance rather than isolation. Two limits are stated in the output
+because they bound what the numbers mean: it counts gates *raised* rather
+than prompts a human saw, as policies are evaluated independently and one
+tool call can raise several; and the approved figure is derived by
+subtracting rejections, policy blocks and headless auto-blocks from gates
+raised, never by pairing a `request` record to an `outcome` record, since
+that correlation is by adjacency. `PI_AUDIT=0` silences the report along
+with the writing.
+
 ### The managed-state receipt
 
 The schema-versioned receipt is what makes updates and uninstalls safe. It

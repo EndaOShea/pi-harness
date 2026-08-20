@@ -55,6 +55,7 @@ package reference is an exact version or an immutable commit.
 | Context budget | Trims oversized bash/grep/find/ls results before they enter context, spilling the full text to a local file the `read` tool can recover | `extensions/context-budget.ts` |
 | Approval hooks | Per-call confirmation for deletion, workspace escapes, secret reads/searches, and outbound transmission | `permissions/` |
 | Policy audit log | Redacted record of sessions, permission requests, and tool outcomes — identifiers only, never paths or command text | `extensions/audit-log.ts`, `permissions/lib/audit.ts` |
+| Approval load | `/approvals` reports gate volume, the policies raising it, and the approval rate, warning when a gate has stopped being read | `extensions/audit-log.ts` |
 
 The machinery in this table is generic; the specific skills, packages, and MCP
 declarations are an example payload. See
@@ -172,6 +173,22 @@ successive denylist attempts were each defeated by an ordinary filename.
 sources off. If your fork adds a policy, call `logPermissionRequest` from it
 or its decisions stay invisible here. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the record shapes and limits.
+
+**Approval load is measurable.** Every gate above is approval assistance,
+not isolation, so the way this layer actually fails is not an evaded
+matcher but an operator who has approved two hundred prompts and stopped
+reading. `/approvals` reads the audit log back as that number: gates raised
+this session and today, a breakdown by policy and matched rule, how they
+resolved, and the approval rate — with a warning, naming the policy
+responsible, once twenty or more gates are running at a ninety per cent or
+higher approval rate. The rate is the signal, not the count: a gate
+approved essentially every time has stopped carrying information whether it
+fired five times or five hundred. The output states its own two limits,
+because they bound what it can claim: it counts gates *raised* rather than
+prompts seen, since policies are evaluated independently and one call can
+raise several, and the approved figure is derived by subtraction rather
+than by pairing request records to outcome records, that correlation being
+by adjacency.
 
 ## Setup at a glance
 
