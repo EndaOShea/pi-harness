@@ -5,6 +5,26 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- added an `installed-entry` CI job that runs the real
+  `scripts/install.sh` into an isolated agent directory and then drives Pi
+  headlessly through it. Every other test exercises the installer against
+  fixtures; nothing proved that what the installer deploys actually loads and
+  gates inside a Pi process. The job asserts the receipt (links resolve,
+  permission-copy hashes match the repo), then loads
+  `tests/fixtures/ci/probe-discovery.ts` to dump `systemPromptOptions` and
+  assert that the permissions, harness extensions, required MCP tools, and
+  skills were all discovered, and finally replays a fixed three-call
+  transcript through `tests/fixtures/ci/fake-provider.ts`, an in-process
+  provider registered via `pi.registerProvider()`: a destructive command is
+  blocked, a secret-shaped read is gated, and a harmless command runs. No CI
+  run reaches a real model provider. Linux-only, because the entry path is
+  not OS-specific. Both `PI_AGENT_DIR` and `PI_CODING_AGENT_DIR` are exported
+  to the same path — the first is the harness's own variable, the second is
+  the one Pi reads, and setting only the first would install into the
+  isolated directory while Pi kept loading its default profile, silently
+  testing nothing. Known coupling: `registerProvider` is documented but
+  pre-1.0, so a Pi version bump can turn this job red for integration drift
+  rather than a harness bug;
 - added `config/npm-allow-scripts.json` and the installer step that seeds it
   into `~/.pi/agent/npm/package.json` before `pi install` runs. npm 11.6+
   leaves a dependency's install script unrun until the project approves it by

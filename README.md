@@ -279,6 +279,20 @@ In-flight branch runs are superseded when the branch is pushed again. Runs on
 validated result. Run `./scripts/validate.sh` locally while the work is still
 being shaped — it is the identical gate.
 
+Alongside the matrix, an `installed-entry` job runs the real
+`scripts/install.sh` into an isolated agent directory and then starts Pi
+against it, so something exercises the assembled product rather than
+fixtures. It checks the receipt, loads a probe extension to confirm that the
+permissions, harness extensions, required MCP tools and skills were actually
+discovered, and replays a fixed transcript through an in-process fake
+provider: a destructive command is blocked, a secret-shaped read is gated,
+and a harmless command runs. No CI run ever reaches a real model provider.
+The job is Linux-only, and its fixtures live in `tests/fixtures/ci/` as repo
+tooling — not installed, not in the resource manifest. It binds to Pi's
+pre-1.0 `registerProvider` surface, so a red run here can mean integration
+drift rather than a harness bug. A fork that adds policies of its own should
+extend that transcript; the job proves what it drives and nothing more.
+
 Forks: Actions minutes are free on public repositories but not on private
 ones, where the macOS leg bills at a 10x multiplier. If you fork this
 privately, keep the filtering.

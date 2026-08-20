@@ -60,6 +60,64 @@ jobs:
       - name: Validate repository and isolated installer
         run: ./scripts/validate.sh
 
+  # Runs the REAL installer into an isolated agent dir, then drives the
+  # assembled product headlessly through a deterministic in-process
+  # provider (tests/fixtures/ci/). Every other job tests the installer
+  # against fixtures; this one proves that what install.sh deploys
+  # actually loads and gates inside a Pi process. No model-provider
+  # network egress: the only network use is npm/git package installation.
+  # Linux only — the entry path is not OS-specific.
+  #
+  # Both PI_AGENT_DIR and PI_CODING_AGENT_DIR are set to the same path.
+  # PI_AGENT_DIR is the harness's own variable (scripts/install.sh and the
+  # harness extensions use it); Pi itself reads PI_CODING_AGENT_DIR to
+  # choose its config directory and ignores PI_AGENT_DIR entirely. Setting
+  # only PI_AGENT_DIR would install into the isolated dir while Pi kept
+  # reading its default profile, so the permission policies under test
+  # would never load.
+  #
+  # scripts/install.sh calls `pi install` once per pinned package over the
+  # network, so this job typically takes several minutes; timeout-minutes
+  # is set above the validate job's 10 to leave headroom.
+  #
+  # The fake provider binds to Pi's registerProvider surface, which is
+  # documented but pre-1.0. A Pi version bump can break this job; that is
+  # the job doing its work, but read a red run here as possible
+  # integration drift rather than assuming a harness bug.
+  installed-entry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install exact Pi runtime
+        run: npm install --global @earendil-works/pi-coding-agent@0.84.1
+      - name: Run the real installer into an isolated agent dir
+        run: |
+          export PI_AGENT_DIR="$RUNNER_TEMP/agent"
+          export PI_CODING_AGENT_DIR="$RUNNER_TEMP/agent"
+          ./scripts/install.sh
+      - name: Drive the installed product through the fake provider
+        run: |
+          export PI_AGENT_DIR="$RUNNER_TEMP/agent"
+          export PI_CODING_AGENT_DIR="$RUNNER_TEMP/agent"
+          export HARNESS_PROBE_OUT="$RUNNER_TEMP/probe.json"
+          pi -e tests/fixtures/ci/fake-provider.ts \
+             -e tests/fixtures/ci/probe-discovery.ts \
+             --provider harness-ci-fake --model fake-1 \
+             -p --no-session --mode json "run the script" \
+             </dev/null > "$RUNNER_TEMP/events.jsonl"
+      - name: Assert entry-path behaviour
+        run: |
+          python3 tests/fixtures/ci/assert_installed_entry.py \
+            "$RUNNER_TEMP/events.jsonl" "$RUNNER_TEMP/probe.json" \
+            "$RUNNER_TEMP/agent"
+
   impeccable-update-check:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
