@@ -5,6 +5,23 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- added a `Recommendations` rule to the contract's reporting section: a
+  report that presents options must name the one to take, give one or two
+  sentences of reasoning, and state the condition that would change it. The
+  contract already required options to be *labelled* once there were three
+  or more, but nothing anywhere required a position, and in practice that
+  produced menus — the investigation done, the conclusion withheld. That
+  hands the analytical work back to the user, who holds less context on the
+  code than the agent that just read it, and it hides the assessment behind
+  a list: a recommendation can be argued with and corrected, where "here are
+  three approaches" cannot. Deferring stays available where the decision
+  genuinely turns on information the agent lacks — preference, risk
+  appetite, business context — but "it depends" alone is not an answer:
+  name the fact that decides it and make the recommendation conditional on
+  that fact. The rule applies to two options as readily as to ten, since the
+  reference-code threshold governs labelling rather than whether a position
+  is owed;
+
 - stopped the test suite writing into the operator's real audit log.
   `permissions/lib/audit.ts` and `extensions/lib/harness-log.ts` resolve
   their destination as `PI_AGENT_DIR || ~/.pi/agent`, and the

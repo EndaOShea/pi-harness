@@ -343,6 +343,29 @@ End every non-trivial task with a short report:
 
 Do not bury limitations, skipped verification, or failed checks.
 
+### Recommendations
+When a report presents options, name the one to take and say why. A menu
+with no recommendation hands the analytical work back to the user, who has
+less context on the code than the agent that has just read it: the
+investigation is the expensive half, and stopping short of the conclusion
+wastes it. A recommendation is also falsifiable in a way a menu is not — it
+can be argued with and corrected, where "here are three approaches" conceals
+what the agent actually concluded.
+
+Give the recommendation, one or two sentences of reasoning, and the
+condition that would change it, so the user can override on a fact the agent
+does not hold.
+
+Deferring is permitted only when the decision genuinely turns on information
+the agent lacks — preference, risk appetite, business context, or an
+intention not stated in the request. Even then, do not stop at "it depends":
+name the fact that decides it and make the recommendation conditional on
+that fact ("if the branch is shared, `O2`; otherwise `O1`"). Presenting
+options and no position is not neutrality, it is an unfinished report.
+
+This applies to any number of options, including two — the reference-code
+threshold governs labelling, not whether a position is owed.
+
 ### Reference codes
 When a report presents three or more findings, decisions, options, risks,
 questions or actions, label each one so later messages can refer to it
