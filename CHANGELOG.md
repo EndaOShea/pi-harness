@@ -5,6 +5,30 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- added a redacted audit log under `$PI_AGENT_DIR/harness/audit/`, written
+  from two correlated sources: the `extensions/audit-log.ts` observer records
+  `session` and `outcome` rows, and each permission module calls
+  `permissions/lib/audit.ts` to record a `request` row at the moment it
+  returns a decision. Pi's session log records messages and tool executions,
+  but not which policy fired, what rule matched, or how the request resolved,
+  so an incident could not be replayed as policy. The log holds identifiers
+  only — policy, tool, matched rule name, decision — never paths, command
+  text, tool output, or prompts. Rule identifiers are sanitised through an
+  *allowlist* of the bounded parenthesised constants the policies define;
+  four earlier denylist attempts were each defeated by an ordinary filename,
+  since a POSIX name may contain any byte but `/` and NUL, and `notes(1).pem`
+  is the OS's own collision-rename shape. Three limits are documented rather
+  than papered over: `request`→`outcome` correlation is adjacency within a
+  process, not identity, because the permission input carries no tool-call
+  id; headless runs record `no-ui` rather than human decisions, so CI
+  transcripts do not read as walls of user rejections; and a policy added to
+  a fork logs nothing unless it also calls the appender. Daily files, pruned
+  after `PI_AUDIT_KEEP_DAYS` (default 30); `PI_AUDIT=0` disables both
+  sources;
+- extracted `build_policy_node_modules` from `run_policy_cases` in the test
+  suite. The audit tests need the jiti-resolvable fixture without the
+  synthetic-tool-input driver wrapped around it, and the two responsibilities
+  were already distinct inside one function;
 - added content-addressed spill for trimmed tool output, over a new shared
   append-only log helper `extensions/lib/harness-log.ts`.
   `extensions/context-budget.ts` kept the head and tail of an oversized tool

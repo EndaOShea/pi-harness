@@ -4,6 +4,7 @@ import {
   type PermissionsAPI,
 } from "@thurstonsand/pi-permissions";
 
+import { logPermissionRequest } from "./lib/audit.ts";
 import { findEgressCommands } from "./lib/path-matchers.js";
 
 // Outbound transmission is the counterpart of secret-read gating: local
@@ -27,6 +28,15 @@ export default function permissions(api: PermissionsAPI) {
           const reasons = [...new Set(findings.map((f) => `${f.program}: ${f.reason}`))]
             .slice(0, 3)
             .join("; ");
+          const programs = [...new Set(findings.map((f) => f.program))]
+            .slice(0, 3)
+            .join(",");
+          logPermissionRequest({
+            policy: "outbound transmission approval",
+            toolName: "bash",
+            rule: programs,
+            decision: "request",
+          });
           return request({
             guidance:
               `This command transmits data off this machine (${reasons}). ` +

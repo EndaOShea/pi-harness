@@ -340,6 +340,13 @@ Usage rules:
 - File-tool paths are resolved through symlinks (`permissions/lib/
   resolve-path.js`) before protected-path, secret, and workspace matching,
   so a symlink cannot launder access to a gated location.
+- Every gate a policy raises is recorded to `~/.pi/agent/harness/audit/` as
+  an identifier-only `request` record, paired with the `session` and
+  `outcome` records the audit observer writes. Read it to answer "which
+  policy gated this and how did it resolve"; it is not a transcript, and
+  holds no paths or command text. A policy added to a fork must call
+  `logPermissionRequest` from `permissions/lib/audit.ts` or its decisions
+  never appear.
 
 Implementation:
 
@@ -351,6 +358,8 @@ Implementation:
   `permissions/workspace-scope.ts`, with shared matchers kept below
   `permissions/lib/` so the loader does not treat support code as a
   standalone policy module.
+- Audit appender in `permissions/lib/audit.ts` and the observer extension
+  `extensions/audit-log.ts`, sharing one daily file per day.
 
 ## Local Model Providers
 

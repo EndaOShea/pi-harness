@@ -54,6 +54,7 @@ package reference is an exact version or an immutable commit.
 | Rate-limit telemetry and governor | `/tpm` command, per-request rate-limit capture, shared usage log, pre-send holds against the token budget | `extensions/tpm-telemetry.ts` |
 | Context budget | Trims oversized bash/grep/find/ls results before they enter context, spilling the full text to a local file the `read` tool can recover | `extensions/context-budget.ts` |
 | Approval hooks | Per-call confirmation for deletion, workspace escapes, secret reads/searches, and outbound transmission | `permissions/` |
+| Policy audit log | Redacted record of sessions, permission requests, and tool outcomes — identifiers only, never paths or command text | `extensions/audit-log.ts`, `permissions/lib/audit.ts` |
 
 The machinery in this table is generic; the specific skills, packages, and MCP
 declarations are an example payload. See
@@ -141,6 +142,22 @@ headers added to an installed MCP entry survive later harness runs without
 being committed or overwritten. A validation test rejects known private
 reference markers; extend that list in your fork with markers of your own.
 
+**Decisions are auditable.** Pi's session log records what ran, but not which
+policy fired, what rule matched, or how the request resolved — so an incident
+can be read as narrative but not replayed as policy. Each policy appends a
+`request` record as it returns a decision, and `extensions/audit-log.ts`
+records the surrounding `session` and `outcome` rows, into daily JSONL files
+under `~/.pi/agent/harness/audit/`. The log holds identifiers only — policy,
+tool, matched rule name, decision — and never paths, command text, tool
+output, or prompts. Rule names are sanitised through an *allowlist* of the
+bounded constants the policies define, rather than by stripping what looks
+sensitive: a POSIX filename may contain any byte but `/` and NUL, so four
+successive denylist attempts were each defeated by an ordinary filename.
+`PI_AUDIT_KEEP_DAYS` (default 30) sets retention and `PI_AUDIT=0` turns both
+sources off. If your fork adds a policy, call `logPermissionRequest` from it
+or its decisions stay invisible here. See
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the record shapes and limits.
+
 ## Setup at a glance
 
 ```bash
@@ -167,6 +184,11 @@ Restart Pi, then confirm the result with `pi config`, `/permissions`, and
 - `.pi/skills/impeccable/` contains the vendored Impeccable frontend workflow
   and is explicitly exposed by the resource manifest.
 - `permissions/` contains the global deletion-approval hook and its matcher.
+  `permissions/lib/audit.ts` is the audit appender the policies write
+  through; it duplicates a few lines of `extensions/lib/harness-log.ts`
+  rather than importing it, because permission modules are copied into the
+  agent directory at install time while extensions are symlinked, so a
+  cross-tree import would break in the installed product.
 - `extensions/` contains harness-managed Pi extensions: local model provider
   discovery for Ollama and LM Studio (`extensions/local-models.ts`),
   rate-limit telemetry and the TPM governor behind `/tpm`

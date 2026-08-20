@@ -148,6 +148,25 @@ whatever the tool call was approved to read, which is why the files are
 owner-only — but they entered model context already when the tool ran, so the
 spill adds local persistence rather than new exposure.
 
+`harness/audit/` holds a redacted, append-only record of what the permission
+layer did: one `session` record per session (provider, model, UI presence,
+and the installed receipt's version and permission hashes), one `request`
+record per gate raised (policy, tool, matched rule name, decision), and one
+`outcome` record per tool execution (`ran` or `blocked`, with the block
+reason classed as `policy-block`, `user-rejected`, `no-ui`, or `other`). It
+holds identifiers, never content: no paths from user commands, no command
+text, no tool output, no prompts. Three properties are worth understanding
+before relying on it. Correlation between a `request` and its `outcome` is
+by process and adjacency, not tool-call identity, because the permission
+input carries no call id. Approval visibility exists only for policies that
+write `request` records, so a policy you add to a fork contributes nothing
+until it calls the appender. And when a session runs without a UI,
+`pi-permissions` converts every approval request into a block, so `no-ui`
+outcomes record the absence of a human decision rather than a refusal —
+headless transcripts must not be read as walls of user rejections. Files
+rotate daily and are pruned after `PI_AUDIT_KEEP_DAYS` (default 30) days;
+`PI_AUDIT=0` disables writing from both sources.
+
 ### The managed-state receipt
 
 The schema-versioned receipt is what makes updates and uninstalls safe. It

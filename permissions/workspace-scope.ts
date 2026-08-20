@@ -6,6 +6,7 @@ import {
   type PermissionsAPI,
 } from "@thurstonsand/pi-permissions";
 
+import { logPermissionRequest } from "./lib/audit.ts";
 import {
   findWorkspaceEscapes,
   isOutsideWorkspace,
@@ -48,11 +49,17 @@ export default function permissions(api: PermissionsAPI) {
       }
 
       const resolvedRoot = resolvePhysicalPath(root);
-      const writeDecision = (lexicalPath: string) => {
+      const writeDecision = (lexicalPath: string, toolName: "write" | "edit") => {
         const absolutePath = resolvePhysicalPath(lexicalPath);
         if (!isOutsideWorkspace(absolutePath, resolvedRoot, EXEMPT_PREFIXES)) {
           return undefined;
         }
+        logPermissionRequest({
+          policy: "workspace scope approval",
+          toolName,
+          rule: "outside-workspace-write",
+          decision: "request",
+        });
         return request({
           guidance:
             `This write targets ${absolutePath}, outside the session ` +
@@ -67,10 +74,10 @@ export default function permissions(api: PermissionsAPI) {
 
       return matchTool(input.tool, {
         write(tool) {
-          return writeDecision(tool.absolutePath);
+          return writeDecision(tool.absolutePath, "write");
         },
         edit(tool) {
-          return writeDecision(tool.absolutePath);
+          return writeDecision(tool.absolutePath, "edit");
         },
         bash(tool) {
           const escapes = findWorkspaceEscapes(
@@ -82,6 +89,12 @@ export default function permissions(api: PermissionsAPI) {
           const shown = [...new Set(escapes.map((e) => e.path))]
             .slice(0, 3)
             .join(", ");
+          logPermissionRequest({
+            policy: "workspace scope approval",
+            toolName: "bash",
+            rule: "outside-workspace-path",
+            decision: "request",
+          });
           return request({
             guidance:
               `This command references paths outside the session working ` +

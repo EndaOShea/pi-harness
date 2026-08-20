@@ -7,6 +7,7 @@ import {
   type PermissionsAPI,
 } from "@thurstonsand/pi-permissions";
 
+import { logPermissionRequest } from "./lib/audit.ts";
 import {
   findCredentialSearchRoot,
   findEnvironmentExposureCommands,
@@ -33,7 +34,7 @@ const PROTECTED_DIRECTORIES = [
 
 const HOME = homedir();
 
-function protectedPathDecision(lexicalPath: string) {
+function protectedPathDecision(lexicalPath: string, toolName: "write" | "edit") {
   const absolutePath = resolvePhysicalPath(lexicalPath);
   const entry = findProtectedDirectory(
     absolutePath,
@@ -43,6 +44,12 @@ function protectedPathDecision(lexicalPath: string) {
   if (!entry) {
     return undefined;
   }
+  logPermissionRequest({
+    policy: "protected path and secret access approval",
+    toolName,
+    rule: entry,
+    decision: "request",
+  });
   return request({
     guidance:
       `This operation modifies a file inside the protected location ` +
@@ -66,16 +73,22 @@ export default function permissions(api: PermissionsAPI) {
     handler(input) {
       return matchTool(input.tool, {
         write(tool) {
-          return protectedPathDecision(tool.absolutePath);
+          return protectedPathDecision(tool.absolutePath, "write");
         },
         edit(tool) {
-          return protectedPathDecision(tool.absolutePath);
+          return protectedPathDecision(tool.absolutePath, "edit");
         },
         read(tool) {
           const rule = isSecretFile(resolvePhysicalPath(tool.absolutePath), HOME);
           if (!rule) {
             return undefined;
           }
+          logPermissionRequest({
+            policy: "protected path and secret access approval",
+            toolName: "read",
+            rule,
+            decision: "request",
+          });
           return request({
             guidance:
               `This read matches a secret pattern (${rule}). The file's ` +
@@ -116,6 +129,12 @@ export default function permissions(api: PermissionsAPI) {
             ...environmentFindings.map((finding) => finding.reason),
             ...resolvedFindings.map((finding) => finding.rule),
           ])].join(", ");
+          logPermissionRequest({
+            policy: "protected path and secret access approval",
+            toolName: "bash",
+            rule: rules,
+            decision: "request",
+          });
           return request({
             guidance:
               `This command references or exposes secret material (${rules}). Its ` +
@@ -136,6 +155,12 @@ export default function permissions(api: PermissionsAPI) {
           if (!rule && !searchRoot) {
             return undefined;
           }
+          logPermissionRequest({
+            policy: "protected path and secret access approval",
+            toolName: "grep",
+            rule: rule ?? searchRoot!,
+            decision: "request",
+          });
           return request({
             guidance:
               `This search targets ${rule ?? searchRoot} and returns matching ` +
