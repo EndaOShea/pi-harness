@@ -5,6 +5,27 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- stopped heredoc bodies being read as shell syntax by the indirect-deletion
+  matcher. Nothing in `permissions/lib/` parsed heredocs, so every `>` inside
+  one matched the truncating-redirection pattern: `cat >> spec.js <<'EOF'`
+  gated on the arrow functions in the body, and a markdown report gated on
+  its blockquotes. Both are appends. Nothing was being truncated, and writing
+  a file this way is among the most common things an agent does — `=>`
+  appears in virtually all modern JavaScript and `>` opens every markdown
+  blockquote. Found in a real session rather than by review: two headless
+  subagents in one project hit it, where a gate is not a prompt but a silent
+  failure, so the work simply did not happen. Bodies are now blanked before
+  the lexical view is built, which has to happen first because that view
+  rewrites the quoted delimiter (`<<'EOF'`) marking where a body begins.
+  Two exemptions are deliberately not widened into hiding places: the marker
+  line itself is kept, so `cat > important.txt <<'EOF'` still gates on its
+  truncating redirect, and the interpreter, perl, xargs and nested-shell
+  patterns still read the RAW command, so a heredoc carrying
+  `shutil.rmtree` is still caught. Secret matching is untouched, living in
+  `path-matchers.js`. An unterminated heredoc blanks the remainder, which is
+  what the shell would do with it and executes nothing. Eight cases added,
+  two of them the must-still-gate shapes;
+
 - added a `Recommendations` rule to the contract's reporting section: a
   report that presents options must name the one to take, give one or two
   sentences of reasoning, and state the condition that would change it. The

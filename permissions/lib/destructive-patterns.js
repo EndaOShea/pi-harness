@@ -287,6 +287,49 @@ function hasTeeOverwrite(command) {
   return false;
 }
 
+/**
+ * Blank out heredoc bodies so they are not read as shell syntax.
+ *
+ * A heredoc body is DATA the command writes, not syntax the shell executes,
+ * but nothing here parsed heredocs, so every ">" inside one read as a
+ * redirection. Appending a test file with `cat >> spec.js <<'EOF'` gated on
+ * the arrow functions in the body, and a markdown report gated on its
+ * blockquotes — both appends, which truncate nothing. Observed in a real
+ * session, where the child was a headless subagent and the gate was not a
+ * prompt but a silent failure.
+ *
+ * The marker line itself is kept, so a genuine `cat > file <<'EOF'` still
+ * gates on its truncating redirect. Only the lexical view is scrubbed: the
+ * interpreter, perl, xargs and nested-shell patterns match the RAW command,
+ * and secret matching lives in path-matchers.js, so a heredoc carrying
+ * `shutil.rmtree` or a credential path is still caught.
+ *
+ * An unterminated heredoc blanks the remainder, which is correct — the
+ * shell would treat it as body too, and nothing in it executes.
+ */
+function suppressHeredocBodies(command) {
+  if (!command.includes("<<")) return command;
+  const START = /<<-?\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  const lines = command.split("\n");
+  const output = [];
+  const pending = [];
+  for (const line of lines) {
+    if (pending.length > 0) {
+      if (line.trim() === pending[0]) {
+        pending.shift();
+        output.push(line);
+      } else {
+        output.push("");
+      }
+      continue;
+    }
+    output.push(line);
+    START.lastIndex = 0;
+    for (const match of line.matchAll(START)) pending.push(match[2]);
+  }
+  return output.join("\n");
+}
+
 export const DESTRUCTIVE_FALLBACK_PATTERNS = [
   {
     name: "interpreter filesystem deletion",
@@ -354,7 +397,9 @@ export const DESTRUCTIVE_FALLBACK_PATTERNS = [
 ];
 
 export function findDestructiveFallbacks(command) {
-  const lexicalView = shellLexicalView(command);
+  // Heredoc bodies are stripped BEFORE the lexical view, because that view
+  // rewrites the quoted delimiter (<<'EOF') that marks where a body begins.
+  const lexicalView = shellLexicalView(suppressHeredocBodies(command));
   const redirectionView = suppressDoubleBracketConditions(lexicalView);
   return DESTRUCTIVE_FALLBACK_PATTERNS.filter((entry) => {
     if (entry === TEE_OVERWRITE) return hasTeeOverwrite(lexicalView);

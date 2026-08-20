@@ -2730,6 +2730,26 @@ for (const item of cases) {
             {"command": "sh -lc \"unlink stale.lock\"", "expected": True},
             {"command": "find . -print0 | xargs -0 rm", "expected": True},
             {"command": "echo 'rm -rf /' | sh", "expected": True},
+            # Heredoc bodies are data, not shell syntax. Observed in a real
+            # session: a headless subagent appending a test file was blocked
+            # by the arrow functions in the body, and a markdown report by
+            # its blockquotes -- both appends, truncating nothing.
+            {"command": "cat >> test/calc.test.js <<'EOF'\ntest('x', () => {\n  expect(1).toBe(1);\n});\nEOF",
+             "expected": False},
+            {"command": "cat >> report.md <<'EOF'\n> quoted line\nEOF", "expected": False},
+            {"command": "cat >> page.html <<'EOF'\n<div>x</div>\nEOF", "expected": False},
+            {"command": "cat >> a.js <<EOF\nconst f = () => 1;\nEOF", "expected": False},
+            {"command": "cat >> a.js <<-EOF\nconst f = () => 1;\n\tEOF", "expected": False},
+            {"command": "cat >> a.js <<'A'\n() => 1\nA\ncat >> b.js <<'B'\n() => 2\nB",
+             "expected": False},
+            # The marker line is still shell syntax, and the raw command is
+            # still what the interpreter pattern reads: neither exemption
+            # may be widened into a hiding place.
+            {"command": "cat > important.txt <<'EOF'\nhello\nEOF", "expected": True},
+            {"command": "python3 - <<'EOF'\nimport shutil; shutil.rmtree('x')\nEOF",
+             "expected": True},
+            {"command": "printf 'rm x\\n' | sudo bash", "expected": True},
+            {"command": "echo 'shred -u secret' | dash", "expected": True},
             {"command": "printf 'rm x\\n' | sudo bash", "expected": True},
             {"command": "echo 'shred -u secret' | dash", "expected": True},
             {"command": "docker run --rm alpine | sh", "expected": False},
