@@ -1421,6 +1421,321 @@ assert(!TRIMMED_TOOLS.includes('edit'), 'edit NOT trimmed');
             self.skipTest("Node.js on PATH cannot strip TypeScript types")
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_trim_spill_callback_preserves_evidence_and_budget(self) -> None:
+        """Spill: the trim notice carries a retrieval handle when a spill
+        callback is provided and succeeds; degrades to today's notice when
+        it fails; and the notice always stays inside the byte budget."""
+        script = """
+import { trimToolContent } from './extensions/context-budget.ts';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+const text = (t) => [{ type: 'text', text: t }];
+const bytes = (blocks) => blocks
+  .filter((b) => b.type === 'text')
+  .reduce((n, b) => n + Buffer.byteLength(b.text, 'utf8'), 0);
+const big = 'HEAD\\n' + 'x'.repeat(60000) + '\\nTAIL';
+
+// Spill succeeds: notice includes path, byte count, and hash prefix.
+let spilledWith = null;
+const out = trimToolContent(text(big), {
+  maxBytes: 1000,
+  spill: (full) => { spilledWith = full; return {
+    path: '/fake/spill/3f9a2c1b.txt',
+    sha256: '3f9a2c1b'.repeat(8),
+  }; },
+});
+assert(out !== null, 'still trimmed');
+assert(spilledWith === big, 'callback received the FULL untrimmed text');
+const joined = out.map((b) => b.text || '').join('');
+assert(joined.includes('/fake/spill/3f9a2c1b.txt'), 'notice has spill path');
+assert(joined.includes('3f9a2c1b'), 'notice has hash');
+assert(bytes(out) <= 1000, 'budget still honoured with handle, got ' + bytes(out));
+assert(joined.includes('HEAD') && joined.includes('TAIL'), 'both ends still kept');
+
+// Spill fails (returns null): exactly today's behaviour, no handle text.
+const fallback = trimToolContent(text(big), { maxBytes: 1000, spill: () => null });
+const fbText = fallback.map((b) => b.text || '').join('');
+assert(!fbText.includes('spilled'), 'no spill claim on failure');
+assert(/trimmed/i.test(fbText), 'trim still announced');
+assert(bytes(fallback) <= 1000, 'budget honoured on fallback');
+
+// Spill throws: swallowed, same fallback.
+const thrown = trimToolContent(text(big), {
+  maxBytes: 1000, spill: () => { throw new Error('disk full'); },
+});
+assert(thrown !== null && bytes(thrown) <= 1000, 'throwing spill tolerated');
+
+// No spill option at all: byte-identical contract with the old signature.
+assert(trimToolContent(text('tiny'), { maxBytes: 1000 }) === null, 'small untouched');
+assert(trimToolContent(text(big), { maxBytes: 0 }) === null, 'zero budget disables');
+
+// The handle-bearing notice is budgeted at worst case for every cap.
+for (const cap of [600, 1000, 4096]) {
+  const capped = trimToolContent(text('A'.repeat(200000)), {
+    maxBytes: cap,
+    spill: () => ({ path: '/spill/' + 'f'.repeat(16) + '.txt', sha256: 'f'.repeat(64) }),
+  });
+  assert(bytes(capped) <= cap, 'cap ' + cap + ' honoured with handle, got ' + bytes(capped));
+}
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_spill_writer_is_content_addressed_and_private(self) -> None:
+        """Spill files: $PI_AGENT_DIR/harness/spill/<sha256-prefix>.txt at
+        0600 in a 0700 dir, content-addressed (identical output writes
+        once), disabled by PI_SPILL_MAX_BYTES=0, fail-open on error."""
+        script = """
+import { mkdtempSync, statSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+
+const agent = mkdtempSync(join(tmpdir(), 'spill-agent-'));
+process.env.PI_AGENT_DIR = agent;
+const { spillToolOutput } = await import('./extensions/context-budget.ts');
+
+const payload = 'SECRET-MIDDLE-' + 'z'.repeat(50000);
+const result = spillToolOutput(payload);
+assert(result !== null, 'spill succeeded');
+const expectedHash = createHash('sha256').update(payload, 'utf8').digest('hex');
+assert(result.sha256 === expectedHash, 'full sha256 reported');
+assert(result.path === join(agent, 'harness', 'spill', expectedHash.slice(0, 16) + '.txt'),
+  'content-addressed path, got ' + result.path);
+assert(readFileSync(result.path, 'utf8') === payload, 'full text on disk');
+assert((statSync(result.path).mode & 0o777) === 0o600, 'file is 0600');
+assert((statSync(join(agent, 'harness', 'spill')).mode & 0o777) === 0o700, 'dir is 0700');
+
+// Content-addressed: same payload again is a no-op reuse, not a rewrite.
+const before = statSync(result.path).mtimeMs;
+const again = spillToolOutput(payload);
+assert(again !== null && again.path === result.path, 'same path for same content');
+assert(statSync(result.path).mtimeMs === before, 'existing file not rewritten');
+assert(readdirSync(join(agent, 'harness', 'spill')).length === 1, 'exactly one file');
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_spill_write_is_atomic_on_failure(self) -> None:
+        """A failed spill write must never leave a partial or corrupt file
+        at the content-addressed path: the name is the whole guarantee, so
+        a later call with the same content must not trust bad bytes left
+        behind by a crashed write. Write-then-rename via a per-process temp
+        name is how that is enforced; this proves the failure path leaves
+        no file and no orphaned temp, and that a subsequent call recovers
+        cleanly with correct, complete content."""
+        script = """
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, existsSync, rmdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+
+const agent = mkdtempSync(join(tmpdir(), 'spill-agent3-'));
+process.env.PI_AGENT_DIR = agent;
+const { spillToolOutput } = await import('./extensions/context-budget.ts');
+
+const payload = 'ATOMIC-WRITE-CHECK-' + 'y'.repeat(50000);
+const sha256 = createHash('sha256').update(payload, 'utf8').digest('hex');
+const spillDir = join(agent, 'harness', 'spill');
+const finalPath = join(spillDir, sha256.slice(0, 16) + '.txt');
+const temporaryPath = finalPath + '.tmp-' + process.pid;
+
+// Force writeFileSync to fail fast: pre-create a DIRECTORY at the exact
+// temp path the writer will use, so its write throws EISDIR immediately
+// (no /proc paths, which hang in this environment).
+mkdirSync(spillDir, { recursive: true, mode: 0o700 });
+mkdirSync(temporaryPath);
+
+const failed = spillToolOutput(payload);
+assert(failed === null, 'failed write fails open, returns null');
+assert(!existsSync(finalPath), 'no file at the content-addressed path after failure');
+// Cleanup: the writer must not have touched our pre-created directory
+// except to fail against it (best-effort cleanup only removes a FILE).
+assert(existsSync(temporaryPath), 'pre-created temp directory still present (writer did not clobber it)');
+rmdirSync(temporaryPath);
+
+// A subsequent successful call recovers cleanly with correct, complete
+// content, and leaves no stray .tmp- files behind.
+const recovered = spillToolOutput(payload);
+assert(recovered !== null, 'subsequent call succeeds');
+assert(recovered.path === finalPath, 'recovered call uses the same content-addressed path');
+assert(readFileSync(recovered.path, 'utf8') === payload, 'recovered content is complete and correct');
+const leftovers = readdirSync(spillDir).filter((name) => name.includes('.tmp-'));
+assert(leftovers.length === 0, 'no orphaned temp files, got ' + JSON.stringify(leftovers));
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_spill_disabled_by_env_and_wired_into_handler(self) -> None:
+        """PI_SPILL_MAX_BYTES=0 restores today's exact behaviour, and the
+        tool_result handler passes the spill callback for trimmed tools."""
+        script = """
+import { mkdtempSync, readdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+
+const agent = mkdtempSync(join(tmpdir(), 'spill-agent2-'));
+process.env.PI_AGENT_DIR = agent;
+process.env.PI_TOOL_OUTPUT_MAX_BYTES = '500';
+const mod = await import('./extensions/context-budget.ts');
+
+// Handler path: a trimmed bash result spills, and the notice names the file.
+const handlers = new Map();
+mod.default({ on: (event, handler) => handlers.set(event, handler) });
+const handler = handlers.get('tool_result');
+const huge = [{ type: 'text', text: 'S\\n' + 'q'.repeat(40000) + '\\nE' }];
+const ctx = { model: { id: 'gpt-5.4', provider: 'openai' } };
+const trimmed = handler({ toolName: 'bash', content: huge }, ctx);
+assert(trimmed && Array.isArray(trimmed.content), 'bash result replaced');
+const notice = trimmed.content.map((b) => b.text || '').join('');
+const spillDir = join(agent, 'harness', 'spill');
+const files = existsSync(spillDir) ? readdirSync(spillDir) : [];
+assert(files.length === 1, 'one spill file written, got ' + JSON.stringify(files));
+assert(notice.includes(files[0]), 'notice names the spill file');
+
+// Env kill switch.
+process.env.PI_SPILL_MAX_BYTES = '0';
+const { spillToolOutput } = mod;
+// NOTE: env is read at module scope like MAX_BYTES; this second import in
+// the same process sees the cached module, so instead assert the exported
+// writer respects a zero cap via its documented contract: implementers must
+// read PI_SPILL_MAX_BYTES at call time in spillToolOutput for this reason.
+assert(spillToolOutput('anything') === null, 'zero cap disables spilling');
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_harness_log_helper_appends_and_prunes(self) -> None:
+        """Shared JSONL helper: 0700 dirs, daily files, age+size pruning.
+
+        Extracted from the conventions tpm-telemetry.ts proved out, for the
+        spill and audit-log consumers. Every operation is fail-open."""
+        script = """
+import { agentDir, ensureDir, appendDaily, pruneOldFiles, pruneToSize }
+  from './extensions/lib/harness-log.ts';
+import { mkdtempSync, statSync, readdirSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+const assert = (cond, msg) => {
+  if (!cond) { console.error('ASSERT: ' + msg); process.exit(1); }
+};
+
+const base = mkdtempSync(join(tmpdir(), 'harness-log-'));
+const dir = join(base, 'audit');
+
+// ensureDir creates 0700 and is idempotent.
+assert(ensureDir(dir) === true, 'ensureDir succeeds');
+assert(ensureDir(dir) === true, 'ensureDir idempotent');
+assert((statSync(dir).mode & 0o777) === 0o700, 'dir mode is 0700');
+
+// appendDaily writes one JSON line to a date-stamped file.
+const ts = Date.UTC(2026, 7, 18, 12, 0, 0);
+appendDaily(dir, 'audit', ts, { kind: 'request', policy: 'p1' });
+appendDaily(dir, 'audit', ts, { kind: 'outcome', result: 'ran' });
+const files = readdirSync(dir);
+assert(files.length === 1 && files[0] === 'audit-2026-08-18.jsonl',
+  'daily file named by UTC date, got ' + JSON.stringify(files));
+const lines = readFileSync(join(dir, files[0]), 'utf8').trim().split('\\n');
+assert(lines.length === 2, 'two records appended');
+assert(JSON.parse(lines[0]).policy === 'p1', 'first record round-trips');
+
+// pruneOldFiles removes files older than keepDays, keeps newer.
+const old = join(dir, 'audit-2026-01-01.jsonl');
+writeFileSync(old, '{}\\n');
+const oldSec = (ts - 40 * 86400_000) / 1000;
+utimesSync(old, oldSec, oldSec);
+pruneOldFiles(dir, 30, ts);
+const afterAge = readdirSync(dir);
+assert(!afterAge.includes('audit-2026-01-01.jsonl'), 'old file pruned');
+assert(afterAge.includes('audit-2026-08-18.jsonl'), 'recent file kept');
+
+// pruneToSize deletes oldest-first until under the cap.
+for (let i = 0; i < 5; i++) {
+  const p = join(dir, 'spill-' + i + '.txt');
+  writeFileSync(p, 'x'.repeat(1000));
+  const t = (ts - (5 - i) * 60_000) / 1000;  // i=0 oldest
+  utimesSync(p, t, t);
+}
+pruneToSize(dir, 2500 + statSync(join(dir, 'audit-2026-08-18.jsonl')).size);
+const spills = readdirSync(dir).filter((f) => f.startsWith('spill-')).sort();
+assert(spills.length === 2, 'pruned down to fit, got ' + JSON.stringify(spills));
+assert(spills.includes('spill-4.txt') && spills.includes('spill-3.txt'),
+  'newest files survive, got ' + JSON.stringify(spills));
+
+// Fail-open: a path whose parent is a regular file can never be a
+// directory (ENOTDIR), which fails fast on every platform.
+const blocker = join(base, 'blocker');
+writeFileSync(blocker, 'x');
+const impossible = join(blocker, 'child');
+assert(ensureDir(impossible) === false, 'ensureDir fails closed to false');
+appendDaily(impossible, 'x', ts, {});   // must not throw
+pruneOldFiles(impossible, 7, ts);        // must not throw
+pruneToSize(impossible, 10);             // must not throw
+console.log('ok');
+"""
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0 and "bad option" in result.stdout:
+            self.skipTest("Node.js on PATH cannot strip TypeScript types")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+
     def test_context_budget_handler_replaces_only_exploration_output(self) -> None:
         """End-to-end through the real tool_result handler.
 

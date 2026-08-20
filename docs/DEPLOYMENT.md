@@ -129,6 +129,25 @@ Before mutation, the installer validates its manifests and any existing
 8. writes `$PI_AGENT_DIR/harness/.managed-state.json` atomically with mode
    `0600` after successful validation.
 
+### Runtime state the harness writes
+
+Beyond the installed files, extensions write local state below
+`$PI_AGENT_DIR/harness/`. None of it is created at install time; each
+directory appears on first use and is safe to delete.
+
+`harness/spill/` holds the full pre-trim output of results the context budget
+shortened. Trimming keeps a result's head and tail, so the middle would
+otherwise be lost; instead it is written to a content-addressed, owner-only
+file (`0600` in a `0700` directory) and the trim notice names the path, byte
+count, and SHA-256, which an ordinary bounded `read` recovers. Identical
+output is stored once. Storage is pruned once per session to
+`PI_SPILL_KEEP_DAYS` (default 7) days and then oldest-first down to
+`PI_SPILL_MAX_BYTES` (default 64MB); `PI_SPILL_MAX_BYTES=0` disables spilling
+and restores discard-only trimming. Spilled bytes can be as sensitive as
+whatever the tool call was approved to read, which is why the files are
+owner-only — but they entered model context already when the tool ran, so the
+spill adds local persistence rather than new exposure.
+
 ### The managed-state receipt
 
 The schema-versioned receipt is what makes updates and uninstalls safe. It

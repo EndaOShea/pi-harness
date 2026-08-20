@@ -22,10 +22,23 @@
  * Disable with PI_TOOL_OUTPUT_MAX_BYTES=0. All handling is exception-wrapped
  * and returns the result unmodified on any failure.
  *
+ * Since the observability update, trimming also spills the full pre-trim
+ * text to a content-addressed, owner-only file under
+ * $PI_AGENT_DIR/harness/spill/, so the discarded middle is not lost; the
+ * trim notice names the file, its byte count, and its SHA-256. Storage is
+ * pruned once per session by PI_SPILL_KEEP_DAYS (default 7 days) and
+ * PI_SPILL_MAX_BYTES (default 64MB); PI_SPILL_MAX_BYTES=0 disables spilling
+ * entirely and restores discard-only trimming.
+ *
  * Deliberately no dependency on the Pi package types, so this file stays
  * parseable by the repository's validation without an installed runtime
  * (same convention as local-models.ts and tpm-telemetry.ts).
  */
+
+import { createHash } from "node:crypto";
+import { existsSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { agentDir, ensureDir, pruneOldFiles, pruneToSize } from "./lib/harness-log.ts";
 
 /** Tools whose output is exploratory and safe to trim. */
 export const TRIMMED_TOOLS = ["bash", "grep", "find", "ls"];
@@ -48,6 +61,14 @@ function readEnvInt(name: string, fallback: number): number {
 }
 
 const MAX_BYTES = readEnvInt("PI_TOOL_OUTPUT_MAX_BYTES", DEFAULT_MAX_BYTES);
+
+const SPILL_KEEP_DAYS = readEnvInt("PI_SPILL_KEEP_DAYS", 7);
+const DEFAULT_SPILL_MAX_BYTES = 64 * 1024 * 1024;
+
+function spillDir(): string {
+  return join(agentDir(), "harness", "spill");
+}
+
 const TRIMMED_PROVIDERS = new Set(
   (process.env.PI_TOOL_OUTPUT_TRIM_PROVIDERS ?? DEFAULT_TRIMMED_PROVIDERS)
     .split(",")
@@ -83,6 +104,58 @@ interface TextBlock {
 
 type ContentBlock = TextBlock | { type: string; [key: string]: unknown };
 
+/** A successfully written spill file for a trimmed result. */
+export interface SpillResult {
+  path: string;
+  sha256: string;
+}
+
+/**
+ * Preserve the full pre-trim text on local disk, content-addressed.
+ *
+ * Storage is owner-only (0600 file, 0700 directory) because trimmed output
+ * can contain anything the original tool call was approved to read. The
+ * same bytes already entered model context when the tool ran; the spill
+ * adds local persistence, not new exposure. PI_SPILL_MAX_BYTES=0 disables.
+ */
+export function spillToolOutput(fullText: string): SpillResult | null {
+  try {
+    const maxBytes = readEnvInt("PI_SPILL_MAX_BYTES", DEFAULT_SPILL_MAX_BYTES);
+    if (maxBytes <= 0) {
+      return null;
+    }
+    const dir = spillDir();
+    if (!ensureDir(dir)) {
+      return null;
+    }
+    const sha256 = createHash("sha256").update(fullText, "utf8").digest("hex");
+    const path = join(dir, `${sha256.slice(0, 16)}.txt`);
+    if (!existsSync(path)) {
+      // Write-then-rename: a crash or ENOSPC mid-write must never leave a
+      // partial file at the content-addressed path, because a later call
+      // with the same content would see it exist and trust it unread. The
+      // temp name is per-process so two processes spilling identical
+      // content cannot clobber each other's in-flight write.
+      const temporary = `${path}.tmp-${process.pid}`;
+      try {
+        writeFileSync(temporary, fullText, { mode: 0o600 });
+        renameSync(temporary, path);
+      } catch (error) {
+        try {
+          unlinkSync(temporary);
+        } catch {
+          // Best-effort cleanup; nothing more to do if this fails too.
+        }
+        throw error;
+      }
+    }
+    return { path, sha256 };
+  } catch {
+    // Spilling is evidence preservation; losing it must not break trimming.
+    return null;
+  }
+}
+
 function isTextBlock(block: unknown): block is TextBlock {
   return (
     !!block &&
@@ -105,7 +178,7 @@ function byteLength(value: string): number {
  */
 export function trimToolContent(
   content: unknown,
-  options: { maxBytes: number },
+  options: { maxBytes: number; spill?: (fullText: string) => SpillResult | null },
 ): ContentBlock[] | null {
   const maxBytes = options.maxBytes;
   if (!Array.isArray(content) || content.length === 0 || maxBytes <= 0) {
@@ -118,13 +191,29 @@ export function trimToolContent(
     return null;
   }
 
+  const fullText = textBlocks.map((block) => block.text).join("");
+  let spilled: SpillResult | null = null;
+  if (options.spill) {
+    try {
+      spilled = options.spill(fullText);
+    } catch {
+      // Spilling is evidence preservation, not a precondition for trimming.
+      spilled = null;
+    }
+  }
+
   // The notice is part of what the model receives, so it comes out of the
   // budget rather than being added on top; otherwise maxBytes is advisory.
   // Reserve against the worst case (dropped === total) so the final notice,
   // which is never longer, always fits what was set aside.
   const makeNotice = (dropped: number) =>
-    `\n\n[harness: trimmed ${dropped} bytes of ${total} to protect the ` +
-    `context budget. Narrow the query to see the middle.]\n\n`;
+    spilled
+      ? `\n\n[harness: trimmed ${dropped} bytes of ${total} to protect the ` +
+        `context budget. Full output spilled to ${spilled.path} (${total} ` +
+        `bytes, sha256 ${spilled.sha256}). Read that path for the middle, ` +
+        `or narrow the query.]\n\n`
+      : `\n\n[harness: trimmed ${dropped} bytes of ${total} to protect the ` +
+        `context budget. Narrow the query to see the middle.]\n\n`;
   const available = Math.max(
     0,
     maxBytes - byteLength(makeNotice(total)) - REPLACEMENT_CHAR_SLACK,
@@ -188,6 +277,8 @@ interface MinimalExtensionApi {
   ): void;
 }
 
+let pruned = false;
+
 export default function contextBudget(pi: MinimalExtensionApi): void {
   pi.on("tool_result", (rawEvent, ctx) => {
     try {
@@ -199,7 +290,18 @@ export default function contextBudget(pi: MinimalExtensionApi): void {
       if (provider === null || !TRIMMED_PROVIDERS.has(provider)) {
         return undefined;
       }
-      const trimmed = trimToolContent(event.content, { maxBytes: MAX_BYTES });
+      if (!pruned) {
+        pruned = true;
+        pruneOldFiles(spillDir(), SPILL_KEEP_DAYS, Date.now());
+        pruneToSize(
+          spillDir(),
+          readEnvInt("PI_SPILL_MAX_BYTES", DEFAULT_SPILL_MAX_BYTES),
+        );
+      }
+      const trimmed = trimToolContent(event.content, {
+        maxBytes: MAX_BYTES,
+        spill: spillToolOutput,
+      });
       return trimmed ? { content: trimmed } : undefined;
     } catch {
       // A guard that breaks tool results is worse than a large context.

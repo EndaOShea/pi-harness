@@ -52,7 +52,7 @@ package reference is an exact version or an immutable commit.
 | Local models | Session-start discovery of Ollama and LM Studio servers | `extensions/local-models.ts` |
 | Usage accounting | Token and cost reporting | `@narumitw/pi-usage` |
 | Rate-limit telemetry and governor | `/tpm` command, per-request rate-limit capture, shared usage log, pre-send holds against the token budget | `extensions/tpm-telemetry.ts` |
-| Context budget | Trims oversized bash/grep/find/ls results before they enter context | `extensions/context-budget.ts` |
+| Context budget | Trims oversized bash/grep/find/ls results before they enter context, spilling the full text to a local file the `read` tool can recover | `extensions/context-budget.ts` |
 | Approval hooks | Per-call confirmation for deletion, workspace escapes, secret reads/searches, and outbound transmission | `permissions/` |
 
 The machinery in this table is generic; the specific skills, packages, and MCP
@@ -171,7 +171,9 @@ Restart Pi, then confirm the result with `pi config`, `/permissions`, and
   discovery for Ollama and LM Studio (`extensions/local-models.ts`),
   rate-limit telemetry and the TPM governor behind `/tpm`
   (`extensions/tpm-telemetry.ts`), and the context budget guard
-  (`extensions/context-budget.ts`).
+  (`extensions/context-budget.ts`). `extensions/lib/` holds the shared
+  append-only JSONL helper they log through; it is a library rather than an
+  extension, which is why it has no `index.ts` for Pi's loader to find.
 - `mcp/` contains optional MCP examples and operating guidance, including a
   disabled Playwright browser-automation application.
 - `config/third-party-skills.json` records third-party provenance and hashes.

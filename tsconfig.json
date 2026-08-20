@@ -7,7 +7,11 @@
     "Nothing is ever emitted; Pi's loader strips types at load time.",
     "permissions/lib/*.js is resolved but not checked (checkJs false):",
     "the matchers are plain JavaScript, exercised directly by the test",
-    "suite through Node rather than through the type system."
+    "suite through Node rather than through the type system.",
+    "allowImportingTsExtensions is on because Pi's loader (and this repo's",
+    "own tests, via node --experimental-strip-types) resolve local imports",
+    "by their literal .ts extension, with no build step to rewrite them to",
+    ".js. It requires noEmit or emitDeclarationOnly, both satisfied here."
   ],
   "compilerOptions": {
     "target": "ES2022",
@@ -19,6 +23,7 @@
     "allowJs": true,
     "checkJs": false,
     "forceConsistentCasingInFileNames": true,
+    "allowImportingTsExtensions": true,
     "types": ["node"]
   },
   "include": ["permissions/**/*.ts", "extensions/**/*.ts"]

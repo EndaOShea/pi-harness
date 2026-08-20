@@ -298,7 +298,11 @@ Implementation:
 
 - `extensions/tpm-telemetry.ts`
 - `extensions/context-budget.ts` trims oversized `bash`/`grep`/`find`/`ls`
-  results before they enter context, scoped to rate-limited providers.
+  results before they enter context, scoped to rate-limited providers. A
+  trim notice names a spill file under `~/.pi/agent/harness/spill/` holding
+  the full output: when the trimmed middle is what you need, `read` that
+  path rather than re-running the command with a narrower filter, which
+  spends the tokens again to get less.
 - `config/settings-defaults.json`, `config/models-defaults.json`
 
 ## Permission Enforcement

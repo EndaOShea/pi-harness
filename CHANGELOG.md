@@ -3,6 +3,33 @@
 All notable harness changes are recorded here. The project does not create a
 release tag automatically; tagging remains an explicit maintainer action.
 
+## Unreleased
+
+- added content-addressed spill for trimmed tool output, over a new shared
+  append-only log helper `extensions/lib/harness-log.ts`.
+  `extensions/context-budget.ts` kept the head and tail of an oversized tool
+  result and destroyed the middle permanently, so a trim that ate the one
+  stack frame that mattered was unrecoverable. The full text is now written
+  to `$PI_AGENT_DIR/harness/spill/<sha256-prefix>.txt` (0600 in a 0700
+  directory, written through a temporary file and renamed, so an interrupted
+  write can never leave a partial file at a content-addressed path that a
+  later call would trust unread) and the trim notice carries the path and
+  hash, which the ordinary `read` tool retrieves — no new tool, no new
+  permission. `trimToolContent` stays pure: the writer is an injected
+  callback, so a spill failure degrades to exactly the previous notice and is
+  never fatal. Identical output writes once. Pruned once per session by
+  `PI_SPILL_KEEP_DAYS` (default 7) and then oldest-first to
+  `PI_SPILL_MAX_BYTES` (default 64MB); `PI_SPILL_MAX_BYTES=0` disables
+  spilling and restores the previous behaviour. Spilled bytes may themselves
+  be secret-shaped, which the secret-read gate would have caught at the
+  original path; accepted, because those same bytes already entered model
+  context un-gated when the tool first ran, so the spill adds local
+  persistence, not new exposure;
+- set `allowImportingTsExtensions` in `tsconfig.json`, which the new
+  `./lib/harness-log.ts` import requires: Pi's loader and the test suite both
+  resolve local imports by their literal `.ts` extension, and there is no
+  build step to rewrite them.
+
 ## 0.1.0-rc.8 - 2026-08-17
 
 - added `test_documentation_does_not_restate_stale_skill_provenance`, which
