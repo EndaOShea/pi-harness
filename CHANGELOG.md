@@ -5,6 +5,31 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- stopped the test suite writing into the operator's real audit log.
+  `permissions/lib/audit.ts` and `extensions/lib/harness-log.ts` resolve
+  their destination as `PI_AGENT_DIR || ~/.pi/agent`, and the
+  policy-integration helper launched its subprocesses without setting that
+  variable, so every policy executed under test appended a genuine-looking
+  `request` record to the real log. On the machine where this was found
+  that was 1578 records in one day and 1724 the day before — 100% of the
+  log, against zero records from any real session. The cost is not disk: a
+  synthetic decision indistinguishable from a live one destroys the log's
+  premise as replayable policy evidence, and makes `/approvals` report
+  volume that never happened, which defeats the instrument added for
+  exactly that question one commit earlier. The suite now allocates one
+  isolated agent directory at import and exports `PI_AGENT_DIR` to it,
+  covering every subprocess that inherits the environment including ones
+  added later, where patching the existing call sites would not. Tests
+  needing a specific directory still pass their own `env` and win. A guard
+  asserts the variable is set, is not the real profile, that a policy's
+  record lands in the isolated log, and that the real log's files do not
+  change size across the call. Note the three similarly named variables
+  kept distinct: `PI_AGENT_DIR` is the harness's own and is what is
+  isolated here; `PI_CODING_AGENT_DIR` is what Pi reads for its profile
+  and nothing in `permissions/` or `extensions/` consults it; and
+  `PI_AGENT_NPM_DIR` stays derived from the real home on purpose, because
+  the fixture builder needs the genuinely installed `pi-permissions`;
+
 - added `/approvals`, which reads the audit log back as approval-gate
   load. Every gate in this harness is approval *assistance* rather than
   isolation, so the way the layer actually fails is not an evaded matcher
