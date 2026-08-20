@@ -5,6 +5,13 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- corrected the `PI_AGENT_DIR` guidance in both scripts' help output and in
+  `docs/DEPLOYMENT.md`. It is the harness's own variable and Pi does not read
+  it; running Pi against an isolated profile also needs `PI_CODING_AGENT_DIR`
+  set to the same path. Setting only `PI_AGENT_DIR` installs correctly into
+  the isolated directory while Pi keeps loading its default profile — so a
+  policy set installed for isolated testing silently never loads, and the
+  test appears to pass against the wrong policies;
 - added a "Rate limits and throughput" section to `AGENTS.md`. The repository
   already shipped the TPM governor, `/tpm`, and both configuration defaults,
   but the contract never said how an agent should behave under a contended

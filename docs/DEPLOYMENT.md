@@ -28,8 +28,11 @@ version-controlled manifests.
 | Approved npm install scripts | `config/npm-allow-scripts.json` | `allowScripts` in `~/.pi/agent/npm/package.json` |
 | Optional Playwright app | `mcp/playwright.optional.example.json` | Manually merged into an MCP configuration only when requested |
 
-Set `PI_AGENT_DIR` to use a different Pi agent directory. Every destination in
-this guide then moves below that directory.
+Set `PI_AGENT_DIR` to change where the harness installs. Every destination in
+this guide then moves below that directory. `PI_AGENT_DIR` is the harness's
+own variable, not one Pi itself reads: actually running Pi against the
+installed profile additionally requires `PI_CODING_AGENT_DIR` set to the same
+path. See [Installer modes](#installer-modes) below.
 
 ## Prerequisites
 
@@ -99,8 +102,25 @@ requires rendered-page interaction or browser-based UI verification.
 | `./scripts/install.sh --skip-mcp` | Yes | Yes | No |
 | `./scripts/install.sh --skip-packages --skip-mcp` | No | Yes | No |
 
-Use `PI_AGENT_DIR=/absolute/path` with any mode to target an isolated or
-non-default Pi profile. A dry run never creates that directory.
+Use `PI_AGENT_DIR=/absolute/path` with any mode to make the installer target
+an isolated or non-default directory. A dry run never creates that
+directory. `PI_AGENT_DIR` only controls where the harness installs: Pi
+itself reads a different variable, `PI_CODING_AGENT_DIR`, to choose its own
+config directory. To actually run Pi against the profile you just installed
+into, export both variables set to the same path:
+
+```bash
+export PI_AGENT_DIR=/absolute/path
+export PI_CODING_AGENT_DIR=/absolute/path
+./scripts/install.sh
+pi   # now reads the profile just installed, not the default one
+```
+
+Setting only `PI_AGENT_DIR` installs correctly into the isolated directory,
+but Pi keeps reading its default profile (normally `~/.pi/agent`) until
+`PI_CODING_AGENT_DIR` is also set — so a policy set installed for isolated
+testing silently never loads, and Pi runs against your existing default
+profile and its existing policies instead.
 
 `--skip-mcp` is an escape hatch for a profile that deliberately manages all
 MCP configuration elsewhere. Such a profile does not satisfy the harness's

@@ -33,7 +33,11 @@ Options:
   -h, --help        Show this help message.
 
 Environment:
-  PI_AGENT_DIR      Override the Pi agent directory (default: ~/.pi/agent).
+  PI_AGENT_DIR      Override where this installer writes harness state
+                    (default: ~/.pi/agent). This is the harness's own
+                    variable; running Pi against that profile also
+                    requires PI_CODING_AGENT_DIR set to the same path,
+                    since Pi reads its own variable, not this one.
 EOF
 }
 

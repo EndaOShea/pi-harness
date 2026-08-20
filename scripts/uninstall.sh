@@ -31,7 +31,10 @@ Options:
   -h, --help   Show this help message.
 
 Environment:
-  PI_AGENT_DIR Override the Pi agent directory (default: ~/.pi/agent).
+  PI_AGENT_DIR Override where this uninstaller looks for harness state
+               (default: ~/.pi/agent). This is the harness's own
+               variable, not one Pi itself reads (see PI_CODING_AGENT_DIR
+               in Pi's own docs).
 
 Pinned Pi packages are not uninstalled; remove them with 'pi' directly if
 desired. Existing backups are never touched.
