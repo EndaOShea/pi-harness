@@ -74,6 +74,7 @@ MODELS_DEFAULTS_FILE="$HARNESS_ROOT/config/models-defaults.json"
 PACKAGE_FILE="$HARNESS_ROOT/packages/pi-packages.txt"
 RESOURCE_MANIFEST="$HARNESS_ROOT/config/resources.json"
 REQUIRED_MCP_FILE="$HARNESS_ROOT/config/required-mcp.json"
+NPM_ALLOW_SCRIPTS_FILE="$HARNESS_ROOT/config/npm-allow-scripts.json"
 
 # Lowest Pi release the pinned packages are known to load under.
 #
@@ -95,6 +96,7 @@ TARGET_EXTENSIONS="$PI_AGENT_DIR/extensions"
 TARGET_PERMISSIONS="$PI_AGENT_DIR/permissions"
 TARGET_HARNESS_ROOT="$PI_AGENT_DIR/harness"
 TARGET_MCP_FILE="$PI_AGENT_DIR/mcp.json"
+TARGET_NPM_PACKAGE_FILE="$PI_AGENT_DIR/npm/package.json"
 MANAGED_STATE_HELPER="$HARNESS_ROOT/scripts/lib/managed_state.py"
 RECEIPT_FILE="$TARGET_HARNESS_ROOT/.managed-state.json"
 
@@ -560,6 +562,39 @@ validate_package_manifest() {
     ((count > 0)) || fail "Package manifest contains no package sources."
 }
 
+validate_npm_allow_scripts() {
+    [[ -f "$NPM_ALLOW_SCRIPTS_FILE" ]] ||
+        fail "Missing npm allow-scripts manifest: $NPM_ALLOW_SCRIPTS_FILE"
+
+    NPM_ALLOW_SCRIPTS_FILE="$NPM_ALLOW_SCRIPTS_FILE" python3 <<'PY'
+import json
+import os
+import re
+from pathlib import Path
+
+path = Path(os.environ["NPM_ALLOW_SCRIPTS_FILE"])
+try:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Invalid npm allow-scripts JSON in {path}: {exc}") from exc
+
+approvals = manifest.get("allowScripts") if isinstance(manifest, dict) else None
+if not isinstance(approvals, dict):
+    raise SystemExit(f"{path} must contain an 'allowScripts' object.")
+
+# npm keys an approval by exact version, so a later release of the same
+# dependency arrives unapproved and has to be reviewed before it can build.
+pinned = re.compile(r"^(@[a-zA-Z0-9._-]+/)?[a-zA-Z0-9._-]+@[0-9]+\.[0-9]+\.[0-9]+$")
+for name, allowed in approvals.items():
+    if not pinned.match(name):
+        raise SystemExit(
+            f"npm install-script approval is not pinned to an exact version: {name}"
+        )
+    if allowed is not True:
+        raise SystemExit(f"npm install-script approval must be true: {name}")
+PY
+}
+
 validate_required_mcp() {
     [[ -f "$REQUIRED_MCP_FILE" ]] ||
         fail "Missing required MCP manifest: $REQUIRED_MCP_FILE"
@@ -694,6 +729,7 @@ validate_repository() {
     validate_models_file
     validate_package_manifest
     validate_required_mcp
+    validate_npm_allow_scripts
     audit_existing_skill_collisions
     if ((SKIP_MCP)); then
         managed_state preflight-install --skip-mcp
@@ -945,6 +981,94 @@ copy_managed_file() {
     info "Copied:"
     info "  $target"
     info "    <- $source"
+}
+
+# Pi installs its extension packages with npm, and npm 11.6+ leaves a
+# dependency's install script unrun until the project approves it by exact
+# version. Anything absent from config/npm-allow-scripts.json stays unrun
+# until a human reviews it and pins it there; approvals are seeded before
+# `pi install` so the reviewed build steps run during installation rather
+# than being skipped with a warning.
+#
+# The manifest is empty today. The only install script npm has reported here
+# is tree-sitter-bash's `node-gyp-build`, which builds a native addon that
+# nothing in this harness loads: pi-permissions parses shell through
+# web-tree-sitter and the package's .wasm grammar.
+npm_allow_scripts_declared() {
+    NPM_ALLOW_SCRIPTS_FILE="$NPM_ALLOW_SCRIPTS_FILE" python3 -c '
+import json
+import os
+from pathlib import Path
+
+approvals = json.loads(
+    Path(os.environ["NPM_ALLOW_SCRIPTS_FILE"]).read_text(encoding="utf-8")
+)["allowScripts"]
+raise SystemExit(0 if approvals else 1)
+'
+}
+
+install_npm_allow_scripts() {
+    if ((SKIP_PACKAGES)); then
+        log "Skipping npm install-script approvals"
+        return 0
+    fi
+
+    log "Approving reviewed npm install scripts"
+
+    if ! npm_allow_scripts_declared; then
+        info "No install scripts are approved; leaving the npm project alone."
+        return 0
+    fi
+
+    if ((DRY_RUN)); then
+        info "Would merge approvals into: $TARGET_NPM_PACKAGE_FILE"
+        return 0
+    fi
+
+    NPM_ALLOW_SCRIPTS_FILE="$NPM_ALLOW_SCRIPTS_FILE" \
+    TARGET_NPM_PACKAGE_FILE="$TARGET_NPM_PACKAGE_FILE" \
+        python3 <<'PY'
+import json
+import os
+import stat
+import tempfile
+from pathlib import Path
+
+approvals = json.loads(
+    Path(os.environ["NPM_ALLOW_SCRIPTS_FILE"]).read_text(encoding="utf-8")
+)["allowScripts"]
+target_path = Path(os.environ["TARGET_NPM_PACKAGE_FILE"]).expanduser()
+target_path.parent.mkdir(parents=True, exist_ok=True)
+
+if target_path.exists():
+    existing = json.loads(target_path.read_text(encoding="utf-8"))
+    mode = stat.S_IMODE(target_path.stat().st_mode)
+else:
+    # Same seed Pi writes when it creates the extension project itself, so
+    # pre-creating the file here is invisible to Pi.
+    existing = {"name": "pi-extensions", "private": True}
+    mode = 0o644
+
+allowed = existing.setdefault("allowScripts", {})
+for name, decision in approvals.items():
+    allowed.setdefault(name, decision)
+
+with tempfile.NamedTemporaryFile(
+    mode="w",
+    encoding="utf-8",
+    dir=target_path.parent,
+    prefix=f".{target_path.name}.",
+    suffix=".tmp",
+    delete=False,
+) as handle:
+    json.dump(existing, handle, indent=2, ensure_ascii=False)
+    handle.write("\n")
+    temporary_path = Path(handle.name)
+
+temporary_path.chmod(mode)
+os.replace(temporary_path, target_path)
+print(f"Updated {target_path}")
+PY
 }
 
 install_packages() {
@@ -1582,6 +1706,7 @@ main() {
     fi
     validate_repository
     run mkdir -p "$PI_AGENT_DIR"
+    install_npm_allow_scripts
     install_packages
     reconcile_managed_state
     install_global_agents_file

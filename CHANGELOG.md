@@ -5,6 +5,19 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- added `config/npm-allow-scripts.json` and the installer step that seeds it
+  into `~/.pi/agent/npm/package.json` before `pi install` runs. npm 11.6+
+  leaves a dependency's install script unrun until the project approves it by
+  exact version, and the harness now decides that in a reviewed manifest
+  rather than by whoever runs `npm approve-scripts` on a machine. The
+  manifest is validated like the other pinned sources: an approval that is
+  not `package@x.y.z`, or whose value is not `true`, fails the run before
+  anything is written, so a later release of an approved dependency arrives
+  unapproved and has to be reviewed. Existing dependencies and any approvals
+  an operator added themselves survive the merge, and an empty manifest
+  leaves the npm project alone entirely. It ships empty: approve a script
+  only after reading what it builds and confirming your fork loads the
+  result;
 - added a redacted audit log under `$PI_AGENT_DIR/harness/audit/`, written
   from two correlated sources: the `extensions/audit-log.ts` observer records
   `session` and `outcome` rows, and each permission module calls

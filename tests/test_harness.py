@@ -22,6 +22,7 @@ UNINSTALLER = ROOT / "scripts" / "uninstall.sh"
 RESOURCES = ROOT / "config" / "resources.json"
 PACKAGE_MANIFEST = ROOT / "packages" / "pi-packages.txt"
 REQUIRED_MCP = ROOT / "config" / "required-mcp.json"
+NPM_ALLOW_SCRIPTS = ROOT / "config" / "npm-allow-scripts.json"
 OPTIONAL_PLAYWRIGHT = ROOT / "mcp" / "playwright.optional.example.json"
 IMPECCABLE_CHECKER = ROOT / "scripts" / "check-impeccable.py"
 VERSION_FILE = ROOT / "VERSION"
@@ -514,6 +515,19 @@ class RepositoryValidationTests(unittest.TestCase):
         )
 
         assert_validate_job_workflow(self, workflow)
+
+    def test_npm_install_script_approvals_are_pinned(self) -> None:
+        approvals = json.loads(NPM_ALLOW_SCRIPTS.read_text(encoding="utf-8"))[
+            "allowScripts"
+        ]
+
+        for name, decision in approvals.items():
+            # npm records an approval as 'package@version'; an unpinned entry
+            # would keep approving every future release of that dependency.
+            self.assertRegex(
+                name, r"^(@[a-zA-Z0-9._-]+/)?[a-zA-Z0-9._-]+@\d+\.\d+\.\d+$"
+            )
+            self.assertIs(decision, True, name)
 
     def test_strict_policy_integration_rejects_missing_dependency(self) -> None:
         empty_agent_npm = retained_on_failure_tmpdir(self, "strict-policy-empty-")
@@ -5662,6 +5676,125 @@ class InstallerBehaviorTests(unittest.TestCase):
         backups = list((agent_dir / "backups").glob("*/mcp.json"))
         self.assertEqual(len(backups), 1, result.stdout)
         self.assertEqual(json.loads(backups[0].read_text(encoding="utf-8")), original)
+
+    def write_fake_pi(self, extra_line: str = "") -> None:
+        fake_pi = self.bin_dir / "pi"
+        fake_pi.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$*" == "--version" ]]; then\n'
+            "    printf '%s\\n' \"$PI_TEST_VERSION\"\n"
+            "    exit 0\n"
+            "fi\n"
+            "printf '%s\\n' \"$*\" >>\"$PI_TEST_LOG\"\n" + extra_line,
+            encoding="utf-8",
+        )
+        fake_pi.chmod(fake_pi.stat().st_mode | stat.S_IXUSR)
+
+    def harness_with_approvals(self, name: str, approvals: dict) -> Path:
+        """A throwaway repository copy whose approval manifest is `approvals`.
+
+        The checked-in manifest is empty, so seeding behaviour is exercised
+        against a manifest the test owns rather than one a later approval
+        would silently change.
+        """
+        harness = self.fixture_root / name
+        shutil.copytree(
+            ROOT,
+            harness,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(".git", ".worktrees", "node_modules"),
+        )
+        (harness / "config" / NPM_ALLOW_SCRIPTS.name).write_text(
+            json.dumps({"allowScripts": approvals}) + "\n", encoding="utf-8"
+        )
+        return harness / "scripts" / "install.sh"
+
+    def test_npm_install_script_approvals_are_seeded_before_packages_install(
+        self,
+    ) -> None:
+        installer = self.harness_with_approvals(
+            "seeding-harness", {"native-dep@1.2.3": True}
+        )
+        agent_dir = self.fixture_root / "allow-scripts-agent"
+        package_json = agent_dir / "npm" / "package.json"
+        # npm only runs an approved install script during an install that
+        # happens after the approval is on disk, so capture what the project
+        # file held at the moment Pi was asked to install packages.
+        observed = self.fixture_root / "package-json-during-install.json"
+        self.write_fake_pi(f'cp "{package_json}" "{observed}" 2>/dev/null || true\n')
+
+        result = self.run_script(installer, agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(
+            json.loads(package_json.read_text(encoding="utf-8"))["allowScripts"],
+            {"native-dep@1.2.3": True},
+        )
+        self.assertEqual(
+            json.loads(observed.read_text(encoding="utf-8"))["allowScripts"],
+            {"native-dep@1.2.3": True},
+        )
+
+    def test_existing_npm_project_keeps_its_dependencies_and_approvals(self) -> None:
+        installer = self.harness_with_approvals(
+            "merging-harness", {"native-dep@1.2.3": True}
+        )
+        agent_dir = self.fixture_root / "existing-npm-agent"
+        package_json = agent_dir / "npm" / "package.json"
+        package_json.parent.mkdir(parents=True)
+        original = {
+            "name": "pi-extensions",
+            "private": True,
+            "dependencies": {"pi-web-access": "^0.19.0"},
+            "allowScripts": {"operator-approved@4.5.6": True},
+        }
+        package_json.write_text(json.dumps(original) + "\n", encoding="utf-8")
+
+        result = self.run_script(installer, agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        installed = json.loads(package_json.read_text(encoding="utf-8"))
+        self.assertEqual(installed["dependencies"], original["dependencies"])
+        self.assertEqual(
+            installed["allowScripts"],
+            {"operator-approved@4.5.6": True, "native-dep@1.2.3": True},
+        )
+
+    def test_empty_approval_manifest_creates_no_npm_project(self) -> None:
+        # The shipped state: nothing approved, so the installer must not
+        # conjure an npm project Pi has not created yet.
+        agent_dir = self.fixture_root / "no-approvals-agent"
+
+        result = self.run_installer(agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("No install scripts are approved", result.stdout)
+        self.assertFalse((agent_dir / "npm").exists(), result.stdout)
+
+    def test_skip_packages_leaves_the_npm_project_untouched(self) -> None:
+        installer = self.harness_with_approvals(
+            "skipped-harness", {"native-dep@1.2.3": True}
+        )
+        agent_dir = self.fixture_root / "skip-packages-npm-agent"
+
+        result = self.run_script(installer, "--skip-packages", agent_dir=agent_dir)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertFalse((agent_dir / "npm").exists(), result.stdout)
+
+    def test_unpinned_npm_install_script_approval_fails_before_mutation(self) -> None:
+        installer = self.harness_with_approvals(
+            "unpinned-harness", {"tree-sitter-bash": True}
+        )
+        agent_dir = self.fixture_root / "unpinned-agent"
+
+        result = self.run_script(installer, agent_dir=agent_dir)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("not pinned to an exact version", result.stdout)
+        self.assertFalse(agent_dir.exists(), result.stdout)
+        self.assertFalse(self.pi_log.exists(), result.stdout)
+
 
     def test_conflicting_required_mcp_server_fails_before_mutation(self) -> None:
         agent_dir = self.fixture_root / "conflicting-mcp-agent"

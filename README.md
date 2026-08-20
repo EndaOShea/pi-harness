@@ -176,6 +176,12 @@ Restart Pi, then confirm the result with `pi config`, `/permissions`, and
 - `config/resources.json` is the allowlist of globally exposed skills and
   prompt directories.
 - `config/required-mcp.json` declares MCP servers required in every Pi setup.
+- `config/npm-allow-scripts.json` lists the dependency install scripts npm
+  may run when Pi installs its extension packages. npm leaves an install
+  script unrun until the project approves it by exact version, so a native
+  build step only executes once it is reviewed and pinned here. It ships
+  empty: approve a script only after reading what it builds and confirming
+  something in your fork actually loads the result.
 - `config/settings-defaults.json` declares the retry policy merged into Pi
   settings on install; `config/models-defaults.json` declares per-model
   input limits merged into Pi models on install. Both are payload: retune

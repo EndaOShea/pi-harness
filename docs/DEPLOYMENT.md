@@ -25,6 +25,7 @@ version-controlled manifests.
 | Permission hooks | `permissions/` | Regular-file copies in `~/.pi/agent/permissions/` |
 | Pi extensions | `extensions/` | Symlinks in `~/.pi/agent/extensions/` |
 | Required MCP servers | `config/required-mcp.json` | `~/.pi/agent/mcp.json` |
+| Approved npm install scripts | `config/npm-allow-scripts.json` | `allowScripts` in `~/.pi/agent/npm/package.json` |
 | Optional Playwright app | `mcp/playwright.optional.example.json` | Manually merged into an MCP configuration only when requested |
 
 Set `PI_AGENT_DIR` to use a different Pi agent directory. Every destination in
