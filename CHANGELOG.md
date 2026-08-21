@@ -5,6 +5,18 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- bounded the cost of choosing a skill. The contract already overrode skill bootstrap text for *invoking* a
+  Superpowers workflow, and that rule works — but it says nothing about the
+  deliberation spent deciding. Observed on an installed harness answering
+  "create a README file": the agent reached the correct conclusion, reopened
+  it four times, and spent several hundred words arguing with a skill's own
+  red-flag table ("this is overkill" listed as rationalisation to overcome)
+  before doing the obvious thing. `### Skills` now states that a trigger is
+  a claim about relevance and not a deliberation budget, that a check
+  returning "not applicable" is not reopened, and that a trivial task takes
+  a skill's judgement without its ceremony. Ending in the right answer does
+  not make the argument free;
+
 - stopped heredoc bodies being read as shell syntax by the indirect-deletion
   matcher. Nothing in `permissions/lib/` parsed heredocs, so every `>` inside
   one matched the truncating-redirection pattern: `cat >> spec.js <<'EOF'`

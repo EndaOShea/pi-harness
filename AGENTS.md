@@ -266,6 +266,18 @@ tool performs the action.
 Load only skills materially relevant to the current task. When a loaded
 skill's process conflicts with this contract, the contract's safety and
 approval rules win; report other conflicts per Instruction priority.
+Skill selection is itself bounded work. A skill's trigger text says when the
+skill is relevant; it says nothing about how much deliberation choosing it
+deserves, and maximal trigger language — "always", "any chance it applies",
+treating "this is overkill" as rationalisation to be overcome — is a claim
+about relevance that does not raise that budget. Decide once, in proportion
+to the task: a question, a single-file edit or a direct request gets a brief
+check, and a check that has already returned "not applicable" is not
+reopened. Re-litigating the same selection is the escalation this contract
+forbids, arriving as deliberation instead of as a workflow, and it is not
+made harmless by ending in the right answer. Where a skill might apply but
+the task is trivial, take the skill's judgement without its ceremony and say
+so in one line rather than arguing the point at length.
 Do not let a third-party skill update or replace its active harness files.
 Stage immutable releases outside the active tree, review them, record
 provenance and obtain any required replacement approval before activation.
