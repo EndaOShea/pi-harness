@@ -5,6 +5,36 @@ release tag automatically; tagging remains an explicit maintainer action.
 
 ## Unreleased
 
+- moved agent run artifacts out of the repositories they were being written
+  into. The Playwright template now passes `--output-dir /tmp/pi-playwright`
+  with a 64MB `--output-max-size`; without it the server creates
+  `.playwright-mcp/` inside whatever repository the session started in.
+  Observed rather than theorised: one real project accumulated 13 capture
+  files and 92 subagent transcripts as untracked droppings, and the agent
+  then swept all 105 into a commit — the `git add -A` the contract forbids,
+  producing a 109-file commit of which 4 files were the actual work. The temp
+  directory is already exempt from workspace-scope approval, so relocation
+  gates nothing, and the size cap means the store evicts instead of waiting
+  for someone to notice and delete it;
+- documented `subagents.artifactDir: "session"` as the equivalent fix for
+  subagent artifacts, which `pi-subagents` writes to
+  `<cwd>/.pi-subagents/artifacts/` by default. The `"session"` value stores
+  them under Pi's session directory and hands them to the age-based cleanup
+  that already runs there, so placement and retention are solved by one
+  setting rather than by a deletion routine the harness would have to own.
+  It is deliberately NOT added to `config/settings-defaults.json`: that
+  manifest owns a whole top-level key, and `subagents` is a key the user's
+  own tooling writes — `/subagents`, `/subagents-load-profile`, and every
+  `agentOverrides` edit — so declaring it would make the next such edit fail
+  installation preflight as a conflict. A one-key manual setting is the
+  smaller cost;
+- recorded the rule that produced both of the above: the harness never adds
+  a `.gitignore` entry to a user's project for its own artifacts. A
+  repository should not have to carry a rule about the agent that visited
+  it, and writing into a project's tracked files to tidy up after ourselves
+  is the same overreach as replacing its vendored dependencies. The
+  artifacts move; the repository is left alone;
+
 - bounded the cost of choosing a skill. The contract already overrode skill bootstrap text for *invoking* a
   Superpowers workflow, and that rule works — but it says nothing about the
   deliberation spent deciding. Observed on an installed harness answering

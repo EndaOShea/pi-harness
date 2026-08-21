@@ -9,7 +9,11 @@
         "--isolated",
         "--browser",
         "firefox",
-        "--block-service-workers"
+        "--block-service-workers",
+        "--output-dir",
+        "/tmp/pi-playwright",
+        "--output-max-size",
+        "67108864"
       ],
       "lifecycle": "lazy",
       "disabled": true,

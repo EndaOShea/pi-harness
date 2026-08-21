@@ -2431,7 +2431,23 @@ assert(held >= 250, 'second request held by the first claim, held ' + held + 'ms
         self.assertEqual(server["args"], [
             "-y", "@playwright/mcp@0.0.79", "--headless", "--isolated",
             "--browser", "firefox", "--block-service-workers",
+            "--output-dir", "/tmp/pi-playwright",
+            "--output-max-size", "67108864",
         ])
+        # Captures must land outside the repository. Without --output-dir the
+        # server writes .playwright-mcp/ into the working directory, where a
+        # session's page snapshots and screenshots become untracked files an
+        # agent then sweeps into a commit -- observed in a real project, 13
+        # captures committed alongside 92 subagent transcripts. The temp
+        # directory is already exempt from workspace-scope approval, and
+        # --output-max-size bounds the store so it is evicted rather than
+        # accumulating for the operator to find and delete.
+        self.assertIn("--output-dir", server["args"])
+        output_dir = server["args"][server["args"].index("--output-dir") + 1]
+        self.assertTrue(
+            output_dir.startswith("/tmp/"),
+            f"captures must not land in a repository: {output_dir}",
+        )
         included = set(server["includeTools"])
         self.assertTrue({
             "browser_navigate", "browser_snapshot", "browser_click",

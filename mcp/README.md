@@ -112,6 +112,13 @@ The reviewed template:
 - selects Firefox, not Chromium;
 - runs headless with an isolated in-memory browser profile;
 - blocks service workers and uses the default stdio transport;
+- writes page snapshots and screenshots to `/tmp/pi-playwright` rather than
+  the working directory, capped at 64MB by `--output-max-size` so the store
+  evicts rather than accumulates. Without `--output-dir` the server creates
+  `.playwright-mcp/` inside whatever repository the session started in, where
+  captures become untracked files an agent later sweeps into a commit — 13 of
+  them reached a real project's history that way. The temp directory is
+  already exempt from workspace-scope approval, so nothing gates on it;
 - allowlists the browser tools required for navigation and UI testing;
 - does not expose `browser_run_code_unsafe`, `browser_evaluate`, file
   upload/drop, cookie/storage controls, network mocking, or other newly added
